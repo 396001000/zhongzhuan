@@ -441,6 +441,91 @@ parse_connection_key() {
     return 0
 }
 
+# 清理现有接口
+cleanup_existing_interface() {
+    local interface_name="$1"
+    
+    log_step "清理接口: $interface_name"
+    
+    # 停止systemd服务
+    if systemctl is-active "wg-quick@$interface_name" >/dev/null 2>&1; then
+        systemctl stop "wg-quick@$interface_name" 2>/dev/null || true
+        systemctl disable "wg-quick@$interface_name" 2>/dev/null || true
+        log_info "已停止systemd服务"
+    fi
+    
+    # 删除网络接口
+    if ip link show "$interface_name" >/dev/null 2>&1; then
+        ip link delete "$interface_name" 2>/dev/null || true
+        log_info "已删除网络接口"
+    fi
+    
+    # 删除配置文件
+    if [[ -f "/etc/wireguard/${interface_name}.conf" ]]; then
+        rm -f "/etc/wireguard/${interface_name}.conf"
+        log_info "已删除配置文件"
+    fi
+    
+    # 清理进程
+    local wg_processes=$(pgrep -f "wg-quick.*$interface_name" 2>/dev/null || true)
+    if [[ -n "$wg_processes" ]]; then
+        echo "$wg_processes" | xargs kill -9 2>/dev/null || true
+        log_info "已清理相关进程"
+    fi
+    
+    # 等待清理完成
+    sleep 2
+    
+    # 验证清理结果
+    if ! ip link show "$interface_name" >/dev/null 2>&1; then
+        log_info "接口清理完成"
+    else
+        log_warn "接口清理可能不完整，但将尝试继续"
+    fi
+}
+
+# 检查端口占用并释放
+check_and_free_port() {
+    local port="$1"
+    local interface_name="$2"
+    
+    # 检查端口占用
+    local port_usage=$(ss -ulpn | grep ":$port " 2>/dev/null || true)
+    if [[ -n "$port_usage" ]]; then
+        log_warn "端口 $port 被占用:"
+        echo "$port_usage"
+        
+        # 检查是否是WireGuard占用
+        local wg_pid=$(echo "$port_usage" | grep -o 'pid=[0-9]*' | cut -d= -f2 | head -1)
+        if [[ -n "$wg_pid" ]]; then
+            local wg_process=$(ps -p "$wg_pid" -o comm= 2>/dev/null || true)
+            if [[ "$wg_process" =~ wg-quick ]]; then
+                log_step "检测到WireGuard进程占用端口，尝试清理..."
+                
+                # 找到相关的WireGuard接口
+                local occupied_interface=$(ps -p "$wg_pid" -o args= | grep -o 'wg-[^ ]*' | head -1 2>/dev/null || true)
+                if [[ -n "$occupied_interface" ]]; then
+                    log_step "清理占用端口的接口: $occupied_interface"
+                    cleanup_existing_interface "$occupied_interface"
+                    
+                    # 重新检查端口
+                    sleep 2
+                    if ! ss -ulpn | grep ":$port " >/dev/null 2>&1; then
+                        log_info "端口 $port 已释放"
+                        return 0
+                    fi
+                fi
+            fi
+        fi
+        
+        log_warn "端口 $port 仍被占用，WireGuard可能无法启动"
+        log_warn "建议手动检查并停止占用端口的进程"
+        return 1
+    fi
+    
+    return 0
+}
+
 # 添加落地机
 add_landing_server() {
     # 检查WireGuard是否安装
@@ -478,6 +563,19 @@ add_landing_server() {
     local interface_name="wg-$(echo "$server_name" | tr ' ' '-' | tr '[:upper:]' '[:lower:]')"
     local subnet=$(($(get_next_subnet)))
     
+    # 检查并清理冲突的接口
+    if ip link show "$interface_name" >/dev/null 2>&1; then
+        log_warn "检测到接口 $interface_name 已存在"
+        read -p "是否删除现有接口并重新配置？[Y/n]: " cleanup_choice
+        if [[ "$cleanup_choice" != "n" && "$cleanup_choice" != "N" ]]; then
+            log_step "清理现有接口..."
+            cleanup_existing_interface "$interface_name"
+        else
+            log_error "接口名冲突，请选择不同的落地机名称"
+            return 1
+        fi
+    fi
+    
     # 创建WireGuard配置文件
     cat > "/etc/wireguard/${interface_name}.conf" << EOF
 [Interface]
@@ -496,6 +594,10 @@ EOF
     # 修复配置文件权限
     chmod 600 "/etc/wireguard/${interface_name}.conf"
     
+    # 检查并释放端口冲突
+    log_step "检查端口占用情况..."
+    check_and_free_port "$SERVER_PORT" "$interface_name"
+    
     # 保存当前SSH连接信息
     local ssh_client_ip=$(echo $SSH_CLIENT | awk '{print $1}' 2>/dev/null || echo "unknown")
     local ssh_port=$(ss -tlnp | grep sshd | awk '{print $4}' | cut -d':' -f2 | head -1 || echo "22")
@@ -506,12 +608,54 @@ EOF
     
     # 启动WireGuard接口（使用安全模式）
     log_step "启动WireGuard接口: $interface_name"
-    if ! wg-quick up "$interface_name" 2>/dev/null; then
-        log_error "WireGuard接口启动失败，请检查配置"
-        log_error "可能的原因：1) 端口被占用 2) 网络配置冲突 3) 权限问题"
-        rm -f "/etc/wireguard/${interface_name}.conf"
+    local wg_error_log="/tmp/wg_error_$interface_name.log"
+    
+    if ! wg-quick up "$interface_name" 2>"$wg_error_log"; then
+        log_error "WireGuard接口启动失败"
+        
+        # 显示详细错误信息
+        if [[ -f "$wg_error_log" ]]; then
+            log_error "错误详情："
+            cat "$wg_error_log" | while read -r line; do
+                log_error "  $line"
+            done
+        fi
+        
+        # 诊断常见问题
+        log_step "诊断问题..."
+        
+        # 检查端口占用
+        if ss -ulpn | grep ":$SERVER_PORT " >/dev/null 2>&1; then
+            log_error "❌ 端口 $SERVER_PORT 被占用"
+            ss -ulpn | grep ":$SERVER_PORT "
+        fi
+        
+        # 检查接口冲突
+        if ip link show "$interface_name" >/dev/null 2>&1; then
+            log_error "❌ 接口 $interface_name 已存在"
+            ip link show "$interface_name"
+        fi
+        
+        # 检查配置文件
+        if [[ -f "/etc/wireguard/${interface_name}.conf" ]]; then
+            log_error "❌ 配置文件权限或格式问题"
+            ls -la "/etc/wireguard/${interface_name}.conf"
+        fi
+        
+        # 清理失败的配置
+        cleanup_existing_interface "$interface_name"
+        rm -f "$wg_error_log"
+        
+        log_error "建议解决方案："
+        log_error "1. 使用不同的落地机名称"
+        log_error "2. 检查落地机端口是否正确"
+        log_error "3. 确保网络环境正常"
+        
         return 1
     fi
+    
+    # 清理临时日志文件
+    rm -f "$wg_error_log"
     
     # 测试连接
     log_step "测试WireGuard连接..."
