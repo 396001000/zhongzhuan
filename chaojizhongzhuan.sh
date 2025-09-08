@@ -86,7 +86,66 @@ install_dependencies() {
     
     if [[ $OS =~ "Ubuntu" ]] || [[ $OS =~ "Debian" ]]; then
         apt update -y
-        apt install -y wireguard wireguard-tools iptables-persistent ufw curl wget net-tools jq
+        
+        # 分步安装以避免依赖冲突
+        apt install -y curl wget net-tools jq
+        
+        # 安装WireGuard
+        apt install -y wireguard wireguard-tools
+        
+        # 处理iptables-persistent和ufw的冲突
+        if ! dpkg -l | grep -q iptables-persistent; then
+            # 如果没有安装iptables-persistent，尝试安装
+            apt install -y iptables-persistent 2>/dev/null || {
+                log_warn "iptables-persistent安装失败，使用替代方案"
+                # 创建iptables规则保存机制
+                mkdir -p /etc/iptables
+                
+                # 创建规则保存脚本
+                cat > /usr/local/bin/save-iptables << 'EOF'
+#!/bin/bash
+# 保存当前iptables规则
+iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+ip6tables-save > /etc/iptables/rules.v6 2>/dev/null || true
+EOF
+                chmod +x /usr/local/bin/save-iptables
+                
+                # 创建规则恢复脚本
+                cat > /usr/local/bin/restore-iptables << 'EOF'
+#!/bin/bash
+# 恢复iptables规则
+if [ -f /etc/iptables/rules.v4 ]; then
+    iptables-restore < /etc/iptables/rules.v4 2>/dev/null || true
+fi
+if [ -f /etc/iptables/rules.v6 ]; then
+    ip6tables-restore < /etc/iptables/rules.v6 2>/dev/null || true
+fi
+EOF
+                chmod +x /usr/local/bin/restore-iptables
+                
+                # 创建systemd服务
+                cat > /etc/systemd/system/iptables-restore.service << 'EOF'
+[Unit]
+Description=Restore iptables rules
+Before=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/restore-iptables
+
+[Install]
+WantedBy=multi-user.target
+EOF
+                systemctl enable iptables-restore.service 2>/dev/null || true
+            }
+        fi
+        
+        # 确保ufw可用
+        if ! command -v ufw &> /dev/null; then
+            apt install -y ufw 2>/dev/null || log_warn "ufw安装失败，将使用iptables"
+        fi
+        
     elif [[ $OS =~ "CentOS" ]] || [[ $OS =~ "Red Hat" ]]; then
         yum update -y
         yum install -y epel-release
@@ -206,7 +265,19 @@ PersistentKeepalive = 25
 EOF
 
     # 配置防火墙
-    ufw allow $port/udp comment "WireGuard" 2>/dev/null || true
+    if command -v ufw &> /dev/null && ufw status >/dev/null 2>&1; then
+        ufw allow $port/udp comment "WireGuard" 2>/dev/null || true
+        log_info "UFW防火墙规则已添加"
+    else
+        # 使用iptables作为备选
+        iptables -I INPUT -p udp --dport $port -j ACCEPT 2>/dev/null || true
+        log_info "iptables防火墙规则已添加"
+        
+        # 保存iptables规则
+        if command -v save-iptables &> /dev/null; then
+            save-iptables
+        fi
+    fi
     
     # 修复配置文件权限
     chmod 600 /etc/wireguard/wg0.conf
