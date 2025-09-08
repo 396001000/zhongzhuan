@@ -294,15 +294,27 @@ cp chaojizhongzhuan.sh /usr/local/bin/chaojizhongzhuan
 
 ## 🔄 更新脚本
 
+### **方法1：脚本内一键更新** ⭐ 推荐
 ```bash
-# 方法1：脚本内更新（开发中）
 chaojizhongzhuan
-# 选择：5. 更新脚本
+# 选择：6. 更新脚本
+# 自动检测版本、备份、下载、安装
+```
 
-# 方法2：重新安装（GitHub）
+**更新功能特性：**
+- ✅ 智能版本检测和对比
+- ✅ 自动备份当前版本  
+- ✅ 支持GitHub/Gitee双源选择
+- ✅ 脚本语法验证
+- ✅ 更新失败自动回滚
+- ✅ 更新完成后可立即重启脚本
+
+### **方法2：重新安装**
+```bash
+# GitHub源
 curl -fsSL https://raw.githubusercontent.com/396001000/zhongzhuan/main/install.sh | bash
 
-# 方法3：重新安装（Gitee，国内用户推荐）
+# Gitee源（国内用户推荐）
 curl -fsSL https://gitee.com/dlaasd/zhongzhuan/raw/master/install.sh | bash
 ```
 

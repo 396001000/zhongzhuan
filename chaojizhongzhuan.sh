@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 超级中转脚本 - WireGuard多落地机管理工具
-# 版本: 1.1.0
+# 版本: 1.2.0
 # 作者: 超级中转团队
 # 支持系统: Ubuntu, Debian, CentOS, RHEL, Fedora, Arch, Manjaro, openSUSE, Alpine, Gentoo, Void
 
@@ -835,10 +835,160 @@ uninstall_script() {
 
 # 更新脚本
 update_script() {
+    echo ""
+    echo "==============================================="
+    echo -e "${BLUE}脚本更新工具${NC}"
+    echo "==============================================="
+    echo ""
+    
     log_step "检查脚本更新..."
     
-    # 这里可以添加从远程仓库下载最新版本的逻辑
-    log_warn "更新功能正在开发中..."
+    # 定义更新源
+    local github_url="https://raw.githubusercontent.com/396001000/zhongzhuan/main/chaojizhongzhuan.sh"
+    local gitee_url="https://gitee.com/dlaasd/zhongzhuan/raw/master/chaojizhongzhuan.sh"
+    local version_url="https://raw.githubusercontent.com/396001000/zhongzhuan/main/version.json"
+    local current_version="1.2.0"
+    
+    # 检查网络连接和版本信息
+    log_step "获取最新版本信息..."
+    local latest_version=""
+    local update_info=""
+    
+    if curl -s --connect-timeout 10 "$version_url" >/dev/null 2>&1; then
+        latest_version=$(curl -s --connect-timeout 10 "$version_url" | jq -r '.version' 2>/dev/null || echo "")
+        update_info=$(curl -s --connect-timeout 10 "$version_url" | jq -r '.changelog[]' 2>/dev/null || echo "")
+    fi
+    
+    echo ""
+    echo -e "${CYAN}当前版本:${NC} $current_version"
+    if [[ -n "$latest_version" ]]; then
+        echo -e "${CYAN}最新版本:${NC} $latest_version"
+        echo ""
+        
+        if [[ "$current_version" == "$latest_version" ]]; then
+            echo -e "${GREEN}✅ 您已经是最新版本！${NC}"
+            echo ""
+            return
+        else
+            echo -e "${YELLOW}📦 发现新版本更新：${NC}"
+            if [[ -n "$update_info" ]]; then
+                echo "$update_info" | while read -r line; do
+                    echo "  • $line"
+                done
+            fi
+            echo ""
+        fi
+    else
+        log_warn "无法获取版本信息，将尝试更新到最新版本"
+        echo ""
+    fi
+    
+    # 选择更新源
+    echo -e "${YELLOW}请选择更新源：${NC}"
+    echo "1. GitHub源（国外推荐）"
+    echo "2. Gitee源（国内推荐）"
+    echo "3. 取消更新"
+    echo ""
+    read -p "请选择 [1-3]: " source_choice
+    
+    local download_url=""
+    case $source_choice in
+        1)
+            download_url="$github_url"
+            echo "使用GitHub源更新..."
+            ;;
+        2)
+            download_url="$gitee_url"
+            echo "使用Gitee源更新..."
+            ;;
+        3)
+            echo "取消更新"
+            return
+            ;;
+        *)
+            log_error "无效选择"
+            return
+            ;;
+    esac
+    
+    # 备份当前脚本
+    log_step "备份当前脚本..."
+    local backup_file="/etc/chaojizhongzhuan/chaojizhongzhuan.sh.backup.$(date +%Y%m%d_%H%M%S)"
+    cp "$SCRIPT_DIR/chaojizhongzhuan.sh" "$backup_file" 2>/dev/null || {
+        log_warn "备份失败，但继续更新..."
+    }
+    
+    # 下载新版本
+    log_step "下载最新版本..."
+    local temp_file="/tmp/chaojizhongzhuan_update.sh"
+    
+    if curl -fsSL --connect-timeout 30 "$download_url" -o "$temp_file"; then
+        log_info "下载成功"
+    else
+        log_error "下载失败，请检查网络连接"
+        return 1
+    fi
+    
+    # 验证下载的文件
+    if [[ ! -s "$temp_file" ]]; then
+        log_error "下载的文件为空"
+        rm -f "$temp_file"
+        return 1
+    fi
+    
+    # 检查脚本语法
+    if ! bash -n "$temp_file" 2>/dev/null; then
+        log_error "下载的脚本语法错误"
+        rm -f "$temp_file"
+        return 1
+    fi
+    
+    # 替换脚本文件
+    log_step "安装新版本..."
+    if cp "$temp_file" "$SCRIPT_DIR/chaojizhongzhuan.sh"; then
+        chmod +x "$SCRIPT_DIR/chaojizhongzhuan.sh"
+        rm -f "$temp_file"
+        log_info "更新成功！"
+        
+        # 更新快捷命令
+        cat > /usr/local/bin/chaojizhongzhuan << 'EOF'
+#!/bin/bash
+bash /etc/chaojizhongzhuan/chaojizhongzhuan.sh "$@"
+EOF
+        chmod +x /usr/local/bin/chaojizhongzhuan
+        
+        echo ""
+        echo "==============================================="
+        echo -e "${GREEN}🎉 更新完成！${NC}"
+        echo "==============================================="
+        echo ""
+        echo -e "${YELLOW}更新内容：${NC}"
+        if [[ -n "$update_info" ]]; then
+            echo "$update_info" | while read -r line; do
+                echo "  ✅ $line"
+            done
+        else
+            echo "  ✅ 脚本已更新到最新版本"
+        fi
+        echo ""
+        echo -e "${YELLOW}备份文件：${NC} $backup_file"
+        echo -e "${YELLOW}使用方法：${NC} 直接运行 chaojizhongzhuan 即可使用新版本"
+        echo ""
+        
+        # 询问是否立即重启脚本
+        read -p "是否立即重启脚本查看新功能？[Y/n]: " restart_choice
+        if [[ "$restart_choice" != "n" && "$restart_choice" != "N" ]]; then
+            echo ""
+            echo "正在重启脚本..."
+            sleep 2
+            exec bash "$SCRIPT_DIR/chaojizhongzhuan.sh"
+        fi
+        
+    else
+        log_error "安装失败"
+        rm -f "$temp_file"
+        return 1
+    fi
 }
 
 # 落地机菜单
@@ -993,7 +1143,7 @@ show_main_menu() {
         clear
         echo -e "${BLUE}"
         echo "╔══════════════════════════════════════╗"
-        echo "║          超级中转脚本 V1.1.0          ║"
+        echo "║          超级中转脚本 V1.2.0          ║"
         echo "║        WireGuard多落地机管理工具       ║"
         echo "╠══════════════════════════════════════╣"
         echo "║  1. 配置落地机 (WireGuard服务端)      ║"
