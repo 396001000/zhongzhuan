@@ -576,13 +576,38 @@ list_landing_servers() {
     jq -r '.servers[] | "\(.name)|\(.endpoint)|\(.interface)"' "$SERVERS_FILE" | while IFS='|' read -r name endpoint interface; do
         local status="离线"
         local color="$RED"
+        local detail=""
         
+        # 检查systemd服务状态
         if systemctl is-active "wg-quick@$interface" >/dev/null 2>&1; then
-            status="在线"
-            color="$GREEN"
+            # 检查WireGuard握手状态
+            local handshake_info=$(wg show "$interface" latest-handshakes 2>/dev/null | head -1)
+            if [[ -n "$handshake_info" ]]; then
+                local handshake_time=$(echo "$handshake_info" | awk '{print $2}')
+                local current_time=$(date +%s)
+                local time_diff=$((current_time - handshake_time))
+                
+                if [[ $time_diff -lt 300 ]]; then  # 5分钟内有握手
+                    status="在线"
+                    color="$GREEN"
+                    if [[ $time_diff -lt 60 ]]; then
+                        detail="(刚刚活跃)"
+                    else
+                        detail="(${time_diff}秒前活跃)"
+                    fi
+                else
+                    status="连接中"
+                    color="$YELLOW"
+                    detail="(${time_diff}秒前握手)"
+                fi
+            else
+                status="启动中"
+                color="$YELLOW"
+                detail="(等待握手)"
+            fi
         fi
         
-        echo -e "$i. ${CYAN}$name${NC} (${color}$status${NC})"
+        echo -e "$i. ${CYAN}$name${NC} (${color}$status${NC}) $detail"
         echo "   端点: $endpoint"
         echo "   接口: $interface"
         echo ""
