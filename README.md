@@ -19,14 +19,27 @@
 
 ## 🎬 快速开始
 
+### 📍 镜像源选择
+
+| 镜像源 | 适用地区 | 速度 | 稳定性 |
+|--------|----------|------|--------|
+| **GitHub** | 海外用户 | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ |
+| **Gitee** | 中国大陆 | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ |
+
 ### 一键安装
 
 ```bash
-# 方法1：使用curl（推荐）
+# 方法1：GitHub源（国外推荐）
 curl -fsSL https://raw.githubusercontent.com/396001000/zhongzhuan/main/install.sh | bash
 
-# 方法2：使用wget
+# 方法2：Gitee源（国内推荐）
+curl -fsSL https://gitee.com/dlaasd/zhongzhuan/raw/master/install.sh | bash
+
+# 方法3：使用wget（GitHub）
 wget -qO- https://raw.githubusercontent.com/396001000/zhongzhuan/main/install.sh | bash
+
+# 方法4：使用wget（Gitee）
+wget -qO- https://gitee.com/dlaasd/zhongzhuan/raw/master/install.sh | bash
 ```
 
 ### 启动脚本
@@ -227,8 +240,11 @@ journalctl -u wg-quick@wg0 -f
 如果一键安装失败，可以手动安装：
 
 ```bash
-# 1. 下载脚本
+# 1. 下载脚本（GitHub）
 wget https://raw.githubusercontent.com/396001000/zhongzhuan/main/chaojizhongzhuan.sh
+
+# 或从Gitee下载（国内用户）
+wget https://gitee.com/dlaasd/zhongzhuan/raw/master/chaojizhongzhuan.sh
 
 # 2. 添加执行权限
 chmod +x chaojizhongzhuan.sh
@@ -247,8 +263,11 @@ cp chaojizhongzhuan.sh /usr/local/bin/chaojizhongzhuan
 chaojizhongzhuan
 # 选择：5. 更新脚本
 
-# 方法2：重新安装
+# 方法2：重新安装（GitHub）
 curl -fsSL https://raw.githubusercontent.com/396001000/zhongzhuan/main/install.sh | bash
+
+# 方法3：重新安装（Gitee，国内用户推荐）
+curl -fsSL https://gitee.com/dlaasd/zhongzhuan/raw/master/install.sh | bash
 ```
 
 ## 🗑️ 卸载脚本
@@ -293,11 +312,17 @@ systemctl disable wg-quick@*
 
 [![Star History Chart](https://api.star-history.com/svg?repos=396001000/zhongzhuan&type=Date)](https://star-history.com/#396001000/zhongzhuan&Date)
 
+## 🔗 项目链接
+
+- 🌐 **GitHub主仓库**: https://github.com/396001000/zhongzhuan
+- 🌐 **Gitee镜像仓库**: https://gitee.com/dlaasd/zhongzhuan
+- 📖 **在线文档**: [GitHub Pages](https://396001000.github.io/zhongzhuan)
+
 ## 📞 联系我们
 
 - 📧 邮箱：your-email@example.com
 - 💬 Telegram：@your_telegram
-- 🐛 问题反馈：[Issues](https://github.com/396001000/zhongzhuan/issues)
+- 🐛 问题反馈：[GitHub Issues](https://github.com/396001000/zhongzhuan/issues) | [Gitee Issues](https://gitee.com/dlaasd/zhongzhuan/issues)
 
 ---
 

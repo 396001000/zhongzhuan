@@ -208,6 +208,9 @@ EOF
     # 配置防火墙
     ufw allow $port/udp comment "WireGuard" 2>/dev/null || true
     
+    # 修复配置文件权限
+    chmod 600 /etc/wireguard/wg0.conf
+    
     # 启动服务
     systemctl enable wg-quick@wg0
     systemctl start wg-quick@wg0
@@ -301,6 +304,9 @@ Endpoint = $SERVER_IP:$SERVER_PORT
 AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 25
 EOF
+    
+    # 修复配置文件权限
+    chmod 600 "/etc/wireguard/${interface_name}.conf"
     
     # 启动WireGuard接口
     wg-quick up "$interface_name"
