@@ -697,14 +697,55 @@ generate_3xui_config() {
     
     local config_file="/tmp/3xui_outbounds_$(date +%Y%m%d_%H%M%S).json"
     
-    # 生成配置
+    # 生成适合3x-ui的配置格式
+    echo ""
+    echo "==============================================="
+    echo -e "${YELLOW}3x-ui WireGuard出站配置代码${NC}"
+    echo "==============================================="
+    echo ""
+    echo -e "${CYAN}方法1: 单个出站配置（推荐）${NC}"
+    echo "复制以下代码到3x-ui出站设置的JSON配置中："
+    echo ""
+    
+    jq -r '.servers[] | "\(.name)|\(.private_key)|\(.public_key)|\(.endpoint)"' "$SERVERS_FILE" | while IFS='|' read -r name private_key public_key endpoint; do
+        local tag="wg-$(echo "$name" | tr ' ' '-' | tr '[:upper:]' '[:lower:]')"
+        
+        echo "----------------------------------------"
+        echo "落地机: $name"
+        echo "----------------------------------------"
+        cat << EOF
+{
+  "tag": "$tag",
+  "protocol": "wireguard",
+  "settings": {
+    "secretKey": "$private_key",
+    "address": ["10.0.0.2/24"],
+    "peers": [
+      {
+        "publicKey": "$public_key",
+        "allowedIPs": ["0.0.0.0/0"],
+        "endpoint": "$endpoint"
+      }
+    ]
+  }
+}
+EOF
+        echo ""
+    done
+    
+    echo ""
+    echo -e "${CYAN}方法2: 完整outbounds配置${NC}"
+    echo "如需要完整的outbounds数组，请复制以下内容："
+    echo ""
+    
+    # 生成完整配置到文件
     cat > "$config_file" << 'EOF'
 {
   "outbounds": [
 EOF
     
     local first=true
-    jq -r '.servers[] | "\(.name)|\(.private_key)|\(.public_key)|\(.endpoint)|\(.subnet)"' "$SERVERS_FILE" | while IFS='|' read -r name private_key public_key endpoint subnet; do
+    jq -r '.servers[] | "\(.name)|\(.private_key)|\(.public_key)|\(.endpoint)"' "$SERVERS_FILE" | while IFS='|' read -r name private_key public_key endpoint; do
         if [[ "$first" == "false" ]]; then
             echo "    }," >> "$config_file"
         fi
