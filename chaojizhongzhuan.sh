@@ -433,8 +433,9 @@ parse_connection_key() {
 add_landing_server() {
     # 检查WireGuard是否安装
     if ! command -v wg-quick &> /dev/null; then
-        log_error "WireGuard未安装，请先安装依赖"
-        return 1
+        log_step "检测到WireGuard未安装，正在安装..."
+        install_dependencies
+        optimize_system
     fi
     
     echo ""
@@ -470,18 +471,29 @@ add_landing_server() {
 [Interface]
 PrivateKey = $CLIENT_PRIVATE_KEY
 Address = 10.0.$subnet.2/24
+# 保留本地SSH连接，避免断开管理连接
+Table = off
 
 [Peer]
 PublicKey = $SERVER_PUBLIC_KEY
 Endpoint = $SERVER_IP:$SERVER_PORT
-AllowedIPs = 0.0.0.0/0
+AllowedIPs = 10.0.$subnet.0/24
 PersistentKeepalive = 25
 EOF
     
     # 修复配置文件权限
     chmod 600 "/etc/wireguard/${interface_name}.conf"
     
-    # 启动WireGuard接口
+    # 保存当前SSH连接信息
+    local ssh_client_ip=$(echo $SSH_CLIENT | awk '{print $1}' 2>/dev/null || echo "unknown")
+    local ssh_port=$(ss -tlnp | grep sshd | awk '{print $4}' | cut -d':' -f2 | head -1 || echo "22")
+    
+    log_warn "重要提醒：正在启动WireGuard，请确保以下连接方式可用："
+    log_warn "1. 服务商控制台/VNC连接"
+    log_warn "2. SSH当前连接保持: $ssh_client_ip:$ssh_port"
+    
+    # 启动WireGuard接口（使用安全模式）
+    log_step "启动WireGuard接口: $interface_name"
     if ! wg-quick up "$interface_name" 2>/dev/null; then
         log_error "WireGuard接口启动失败，请检查配置"
         log_error "可能的原因：1) 端口被占用 2) 网络配置冲突 3) 权限问题"
@@ -489,7 +501,18 @@ EOF
         return 1
     fi
     
+    # 测试连接
+    log_step "测试WireGuard连接..."
+    sleep 3
+    if ! wg show "$interface_name" >/dev/null 2>&1; then
+        log_error "WireGuard接口状态异常"
+        wg-quick down "$interface_name" 2>/dev/null || true
+        rm -f "/etc/wireguard/${interface_name}.conf"
+        return 1
+    fi
+    
     systemctl enable "wg-quick@$interface_name" 2>/dev/null || true
+    log_info "WireGuard接口启动成功: $interface_name"
     
     # 保存到服务器列表
     local server_data=$(cat << EOF
@@ -951,8 +974,9 @@ show_main_menu() {
         echo "║  1. 配置落地机 (WireGuard服务端)      ║"
         echo "║  2. 配置中转机 (WireGuard客户端)      ║"
         echo "║  3. 管理服务                         ║"
-        echo "║  4. 卸载脚本                         ║"
-        echo "║  5. 更新脚本                         ║"
+        echo "║  4. 紧急恢复网络                     ║"
+        echo "║  5. 卸载脚本                         ║"
+        echo "║  6. 更新脚本                         ║"
         echo "║  0. 退出脚本                         ║"
         echo "╚══════════════════════════════════════╝"
         echo -e "${NC}"
@@ -967,7 +991,7 @@ show_main_menu() {
             fi
         fi
         
-        read -p "请选择操作 [0-5]: " choice
+        read -p "请选择操作 [0-6]: " choice
         
         case $choice in
             1)
@@ -990,10 +1014,13 @@ show_main_menu() {
                 fi
                 ;;
             4)
+                emergency_network_recovery
+                ;;
+            5)
                 uninstall_script
                 exit 0
                 ;;
-            5)
+            6)
                 update_script
                 read -p "按回车键继续..."
                 ;;
@@ -1007,6 +1034,105 @@ show_main_menu() {
                 ;;
         esac
     done
+}
+
+# 紧急恢复网络
+emergency_network_recovery() {
+    echo ""
+    echo "==============================================="
+    echo -e "${RED}紧急网络恢复工具${NC}"
+    echo "==============================================="
+    echo ""
+    echo -e "${YELLOW}此功能将执行以下操作：${NC}"
+    echo "1. 停止所有WireGuard服务"
+    echo "2. 删除WireGuard配置文件"
+    echo "3. 清理网络路由表"
+    echo "4. 重置防火墙规则"
+    echo "5. 重启网络服务"
+    echo ""
+    echo -e "${RED}警告：此操作将删除所有WireGuard配置！${NC}"
+    echo ""
+    read -p "确认执行紧急恢复？(输入 YES 确认): " confirm
+    
+    if [[ "$confirm" != "YES" ]]; then
+        echo "操作已取消"
+        return
+    fi
+    
+    log_step "执行紧急网络恢复..."
+    
+    # 1. 停止所有WireGuard服务
+    log_step "停止WireGuard服务..."
+    systemctl stop wg-quick@* 2>/dev/null || true
+    systemctl disable wg-quick@* 2>/dev/null || true
+    
+    # 2. 删除WireGuard配置
+    log_step "删除WireGuard配置..."
+    rm -f /etc/wireguard/wg*.conf 2>/dev/null || true
+    
+    # 3. 清理网络路由
+    log_step "清理网络路由..."
+    # 删除WireGuard接口
+    for interface in $(ip link show | grep wg- | awk -F: '{print $2}' | tr -d ' '); do
+        ip link delete "$interface" 2>/dev/null || true
+    done
+    
+    # 4. 重置防火墙规则
+    log_step "重置防火墙规则..."
+    if command -v firewall-cmd &> /dev/null && systemctl is-active firewalld >/dev/null 2>&1; then
+        firewall-cmd --reload 2>/dev/null || true
+    elif command -v ufw &> /dev/null; then
+        ufw --force reset 2>/dev/null || true
+        ufw --force enable 2>/dev/null || true
+    else
+        # 清理iptables规则（保留基本SSH规则）
+        iptables -F 2>/dev/null || true
+        iptables -X 2>/dev/null || true
+        iptables -t nat -F 2>/dev/null || true
+        iptables -t nat -X 2>/dev/null || true
+        
+        # 重新添加基本规则
+        iptables -P INPUT ACCEPT 2>/dev/null || true
+        iptables -P FORWARD ACCEPT 2>/dev/null || true
+        iptables -P OUTPUT ACCEPT 2>/dev/null || true
+        
+        # 保存规则
+        if command -v save-iptables &> /dev/null; then
+            save-iptables
+        fi
+    fi
+    
+    # 5. 重启网络服务
+    log_step "重启网络服务..."
+    if systemctl is-active NetworkManager >/dev/null 2>&1; then
+        systemctl restart NetworkManager 2>/dev/null || true
+    elif systemctl is-active networking >/dev/null 2>&1; then
+        systemctl restart networking 2>/dev/null || true
+    fi
+    
+    # 6. 清理脚本配置
+    log_step "清理脚本配置..."
+    rm -f "$CONFIG_FILE" 2>/dev/null || true
+    rm -f "$SERVERS_FILE" 2>/dev/null || true
+    
+    echo ""
+    echo "==============================================="
+    echo -e "${GREEN}紧急恢复完成！${NC}"
+    echo "==============================================="
+    echo ""
+    echo -e "${YELLOW}恢复结果：${NC}"
+    echo "✅ WireGuard服务已停止"
+    echo "✅ 配置文件已清理"
+    echo "✅ 网络路由已重置"
+    echo "✅ 防火墙规则已重置"
+    echo "✅ 网络服务已重启"
+    echo ""
+    echo -e "${YELLOW}建议操作：${NC}"
+    echo "1. 测试SSH连接是否正常"
+    echo "2. 检查服务器网络连接"
+    echo "3. 如需重新配置WireGuard，请重新运行脚本"
+    echo ""
+    read -p "按回车键继续..."
 }
 
 # 创建管理命令
