@@ -534,6 +534,21 @@ EOF
     
     jq ".servers += [$server_data]" "$SERVERS_FILE" > "${SERVERS_FILE}.tmp" && mv "${SERVERS_FILE}.tmp" "$SERVERS_FILE"
     
+    # 创建中转机配置文件（如果不存在）
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        cat > "$CONFIG_FILE" << EOF
+{
+    "type": "relay_server",
+    "created_time": "$(date)",
+    "total_servers": 1
+}
+EOF
+    else
+        # 更新服务器数量
+        local total=$(jq '.servers | length' "$SERVERS_FILE" 2>/dev/null || echo 1)
+        jq ".total_servers = $total" "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+    fi
+    
     # 测试连接
     log_step "测试连接到落地机..."
     if ping -c 3 -W 5 "10.0.0.1" >/dev/null 2>&1; then
