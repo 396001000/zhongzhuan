@@ -264,6 +264,12 @@ parse_connection_key() {
 
 # 添加落地机
 add_landing_server() {
+    # 检查WireGuard是否安装
+    if ! command -v wg-quick &> /dev/null; then
+        log_error "WireGuard未安装，请先安装依赖"
+        return 1
+    fi
+    
     echo ""
     read -p "请输入落地机名称: " server_name
     if [[ -z "$server_name" ]]; then
@@ -309,8 +315,14 @@ EOF
     chmod 600 "/etc/wireguard/${interface_name}.conf"
     
     # 启动WireGuard接口
-    wg-quick up "$interface_name"
-    systemctl enable "wg-quick@$interface_name"
+    if ! wg-quick up "$interface_name" 2>/dev/null; then
+        log_error "WireGuard接口启动失败，请检查配置"
+        log_error "可能的原因：1) 端口被占用 2) 网络配置冲突 3) 权限问题"
+        rm -f "/etc/wireguard/${interface_name}.conf"
+        return 1
+    fi
+    
+    systemctl enable "wg-quick@$interface_name" 2>/dev/null || true
     
     # 保存到服务器列表
     local server_data=$(cat << EOF
@@ -694,15 +706,24 @@ show_relay_menu() {
         echo "║  5. 查看连接状态                     ║"
         echo "║  6. 一键优化系统                     ║"
         echo "║  7. 重启WireGuard                    ║"
+        echo "║  9. 初始化中转机环境                 ║"
         echo "║  8. 返回主菜单                       ║"
         echo "╚══════════════════════════════════════╝"
         echo -e "${NC}"
         
-        read -p "请选择操作 [1-8]: " choice
+        # 检查WireGuard安装状态
+        if ! command -v wg-quick &> /dev/null; then
+            echo -e "${YELLOW}⚠️  检测到WireGuard未安装，添加落地机时将自动安装${NC}"
+            echo ""
+        fi
+        
+        read -p "请选择操作 [1-9]: " choice
         
         case $choice in
             1)
-                if [[ ! -d "/etc/wireguard" ]]; then
+                # 确保WireGuard已安装
+                if ! command -v wg-quick &> /dev/null; then
+                    log_step "检测到WireGuard未安装，正在安装..."
                     install_dependencies
                     optimize_system
                 fi
@@ -735,6 +756,13 @@ show_relay_menu() {
                 ;;
             8)
                 return
+                ;;
+            9)
+                log_step "初始化中转机环境..."
+                install_dependencies
+                optimize_system
+                log_info "中转机环境初始化完成"
+                read -p "按回车键继续..."
                 ;;
             *)
                 log_error "无效选择，请重新输入"
