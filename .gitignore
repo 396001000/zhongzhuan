@@ -1,0 +1,29 @@
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 临时文件
+*.tmp
+*.log
+*.backup
+
+# 配置文件（包含敏感信息）
+config.json
+servers.json
+*.key
+*.pub
+
+# 编辑器文件
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 测试文件
+test/
+*.test
+
+# 构建文件
+build/
+dist/

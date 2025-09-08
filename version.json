@@ -1,0 +1,15 @@
+{
+  "version": "1.0.0",
+  "update_time": "2025-01-09",
+  "download_url": "https://raw.githubusercontent.com/用户名/仓库名/main/chaojizhongzhuan.sh",
+  "changelog": [
+    "✅ 支持WireGuard多落地机管理",
+    "✅ 自动生成3x-ui出站配置",
+    "✅ 系统网络优化",
+    "✅ 可视化管理界面"
+  ],
+  "requirements": {
+    "os": ["Ubuntu", "Debian", "CentOS"],
+    "arch": ["x86_64", "aarch64"]
+  }
+}
