@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # 超级中转脚本 - WireGuard多落地机管理工具
-# 版本: 1.0
+# 版本: 1.1.0
 # 作者: 超级中转团队
+# 支持系统: Ubuntu, Debian, CentOS, RHEL, Fedora, Arch, Manjaro, openSUSE, Alpine, Gentoo, Void
 
 set -e
 
@@ -51,11 +52,23 @@ detect_system() {
         . /etc/os-release
         OS=$NAME
         VER=$VERSION_ID
+        OS_ID=$ID
+        OS_ID_LIKE=$ID_LIKE
+    elif [[ -f /etc/redhat-release ]]; then
+        OS=$(cat /etc/redhat-release | cut -d' ' -f1)
+        VER=$(cat /etc/redhat-release | grep -oE '[0-9]+\.[0-9]+' | head -1)
+        OS_ID="rhel"
+    elif [[ -f /etc/debian_version ]]; then
+        OS="Debian"
+        VER=$(cat /etc/debian_version)
+        OS_ID="debian"
     else
         log_error "无法检测操作系统类型"
         exit 1
     fi
+    
     log_info "检测到系统: $OS $VER"
+    log_info "系统标识: $OS_ID"
 }
 
 # 创建脚本目录
@@ -84,7 +97,8 @@ find_available_port() {
 install_dependencies() {
     log_step "安装系统依赖..."
     
-    if [[ $OS =~ "Ubuntu" ]] || [[ $OS =~ "Debian" ]]; then
+    # Debian/Ubuntu系列
+    if [[ "$OS_ID" == "ubuntu" ]] || [[ "$OS_ID" == "debian" ]] || [[ "$OS_ID_LIKE" =~ "debian" ]]; then
         apt update -y
         
         # 分步安装以避免依赖冲突
@@ -94,24 +108,100 @@ install_dependencies() {
         apt install -y wireguard wireguard-tools
         
         # 处理iptables-persistent和ufw的冲突
-        if ! dpkg -l | grep -q iptables-persistent; then
-            # 如果没有安装iptables-persistent，尝试安装
-            apt install -y iptables-persistent 2>/dev/null || {
-                log_warn "iptables-persistent安装失败，使用替代方案"
-                # 创建iptables规则保存机制
-                mkdir -p /etc/iptables
-                
-                # 创建规则保存脚本
-                cat > /usr/local/bin/save-iptables << 'EOF'
+        setup_iptables_persistence
+        
+        # 确保ufw可用
+        if ! command -v ufw &> /dev/null; then
+            apt install -y ufw 2>/dev/null || log_warn "ufw安装失败，将使用iptables"
+        fi
+        
+    # RHEL/CentOS/Fedora系列
+    elif [[ "$OS_ID" == "centos" ]] || [[ "$OS_ID" == "rhel" ]] || [[ "$OS_ID" == "fedora" ]] || [[ "$OS_ID_LIKE" =~ "rhel" ]] || [[ "$OS_ID_LIKE" =~ "fedora" ]]; then
+        
+        if [[ "$OS_ID" == "fedora" ]]; then
+            # Fedora使用dnf
+            dnf update -y
+            dnf install -y wireguard-tools iptables curl wget net-tools jq
+        else
+            # RHEL/CentOS使用yum
+            if command -v dnf &> /dev/null; then
+                dnf update -y
+                dnf install -y epel-release
+                dnf install -y wireguard-tools iptables curl wget net-tools jq
+            else
+                yum update -y
+                yum install -y epel-release
+                yum install -y wireguard-tools iptables curl wget net-tools jq
+            fi
+        fi
+        
+        # RHEL系列通常使用firewalld
+        if command -v firewalld &> /dev/null; then
+            systemctl enable firewalld 2>/dev/null || true
+            systemctl start firewalld 2>/dev/null || true
+        fi
+        
+    # Arch Linux系列
+    elif [[ "$OS_ID" == "arch" ]] || [[ "$OS_ID" == "manjaro" ]] || [[ "$OS_ID_LIKE" =~ "arch" ]]; then
+        pacman -Syu --noconfirm
+        pacman -S --noconfirm wireguard-tools iptables curl wget net-tools jq
+        
+    # openSUSE系列
+    elif [[ "$OS_ID" == "opensuse-leap" ]] || [[ "$OS_ID" == "opensuse-tumbleweed" ]] || [[ "$OS_ID" == "sles" ]]; then
+        zypper refresh
+        zypper install -y wireguard-tools iptables curl wget net-tools jq
+        
+    # Alpine Linux
+    elif [[ "$OS_ID" == "alpine" ]]; then
+        apk update
+        apk add wireguard-tools iptables curl wget net-tools jq
+        
+    # Gentoo
+    elif [[ "$OS_ID" == "gentoo" ]]; then
+        emerge --sync
+        emerge -av net-vpn/wireguard-tools net-firewall/iptables net-misc/curl net-misc/wget sys-apps/net-tools app-misc/jq
+        
+    # Void Linux
+    elif [[ "$OS_ID" == "void" ]]; then
+        xbps-install -Syu
+        xbps-install -y wireguard-tools iptables curl wget net-tools jq
+        
+    else
+        log_error "不支持的操作系统: $OS ($OS_ID)"
+        log_error "支持的系统: Ubuntu, Debian, CentOS, RHEL, Fedora, Arch Linux, Manjaro, openSUSE, Alpine, Gentoo, Void Linux"
+        exit 1
+    fi
+    
+    log_info "依赖安装完成"
+}
+
+# 设置iptables持久化
+setup_iptables_persistence() {
+    if ! dpkg -l | grep -q iptables-persistent; then
+        # 如果没有安装iptables-persistent，尝试安装
+        apt install -y iptables-persistent 2>/dev/null || {
+            log_warn "iptables-persistent安装失败，使用替代方案"
+            create_iptables_scripts
+        }
+    fi
+}
+
+# 创建iptables管理脚本
+create_iptables_scripts() {
+    # 创建iptables规则保存机制
+    mkdir -p /etc/iptables
+    
+    # 创建规则保存脚本
+    cat > /usr/local/bin/save-iptables << 'EOF'
 #!/bin/bash
 # 保存当前iptables规则
 iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
 ip6tables-save > /etc/iptables/rules.v6 2>/dev/null || true
 EOF
-                chmod +x /usr/local/bin/save-iptables
-                
-                # 创建规则恢复脚本
-                cat > /usr/local/bin/restore-iptables << 'EOF'
+    chmod +x /usr/local/bin/save-iptables
+    
+    # 创建规则恢复脚本
+    cat > /usr/local/bin/restore-iptables << 'EOF'
 #!/bin/bash
 # 恢复iptables规则
 if [ -f /etc/iptables/rules.v4 ]; then
@@ -121,10 +211,10 @@ if [ -f /etc/iptables/rules.v6 ]; then
     ip6tables-restore < /etc/iptables/rules.v6 2>/dev/null || true
 fi
 EOF
-                chmod +x /usr/local/bin/restore-iptables
-                
-                # 创建systemd服务
-                cat > /etc/systemd/system/iptables-restore.service << 'EOF'
+    chmod +x /usr/local/bin/restore-iptables
+    
+    # 创建systemd服务
+    cat > /etc/systemd/system/iptables-restore.service << 'EOF'
 [Unit]
 Description=Restore iptables rules
 Before=network-pre.target
@@ -137,25 +227,43 @@ ExecStart=/usr/local/bin/restore-iptables
 [Install]
 WantedBy=multi-user.target
 EOF
-                systemctl enable iptables-restore.service 2>/dev/null || true
-            }
-        fi
-        
-        # 确保ufw可用
-        if ! command -v ufw &> /dev/null; then
-            apt install -y ufw 2>/dev/null || log_warn "ufw安装失败，将使用iptables"
-        fi
-        
-    elif [[ $OS =~ "CentOS" ]] || [[ $OS =~ "Red Hat" ]]; then
-        yum update -y
-        yum install -y epel-release
-        yum install -y wireguard-tools iptables curl wget net-tools jq
-    else
-        log_error "不支持的操作系统: $OS"
-        exit 1
-    fi
+    systemctl enable iptables-restore.service 2>/dev/null || true
+}
+
+# 配置防火墙
+configure_firewall() {
+    local port=$1
+    log_step "配置防火墙规则..."
     
-    log_info "依赖安装完成"
+    # 优先级：firewalld > ufw > iptables
+    if command -v firewall-cmd &> /dev/null && systemctl is-active firewalld >/dev/null 2>&1; then
+        # 使用firewalld (RHEL/CentOS/Fedora)
+        firewall-cmd --permanent --add-port=${port}/udp 2>/dev/null || true
+        firewall-cmd --reload 2>/dev/null || true
+        log_info "Firewalld防火墙规则已添加"
+        
+    elif command -v ufw &> /dev/null && ufw status >/dev/null 2>&1; then
+        # 使用UFW (Ubuntu/Debian)
+        ufw allow $port/udp comment "WireGuard" 2>/dev/null || true
+        log_info "UFW防火墙规则已添加"
+        
+    else
+        # 使用iptables作为备选
+        iptables -I INPUT -p udp --dport $port -j ACCEPT 2>/dev/null || true
+        log_info "iptables防火墙规则已添加"
+        
+        # 保存iptables规则
+        if command -v save-iptables &> /dev/null; then
+            save-iptables
+        elif command -v iptables-save &> /dev/null; then
+            # 尝试其他保存方式
+            if [[ "$OS_ID" == "arch" ]] || [[ "$OS_ID" == "manjaro" ]]; then
+                iptables-save > /etc/iptables/iptables.rules 2>/dev/null || true
+            elif [[ "$OS_ID" == "alpine" ]]; then
+                /etc/init.d/iptables save 2>/dev/null || true
+            fi
+        fi
+    fi
 }
 
 # 系统优化
@@ -265,19 +373,7 @@ PersistentKeepalive = 25
 EOF
 
     # 配置防火墙
-    if command -v ufw &> /dev/null && ufw status >/dev/null 2>&1; then
-        ufw allow $port/udp comment "WireGuard" 2>/dev/null || true
-        log_info "UFW防火墙规则已添加"
-    else
-        # 使用iptables作为备选
-        iptables -I INPUT -p udp --dport $port -j ACCEPT 2>/dev/null || true
-        log_info "iptables防火墙规则已添加"
-        
-        # 保存iptables规则
-        if command -v save-iptables &> /dev/null; then
-            save-iptables
-        fi
-    fi
+    configure_firewall $port
     
     # 修复配置文件权限
     chmod 600 /etc/wireguard/wg0.conf
@@ -849,7 +945,7 @@ show_main_menu() {
         clear
         echo -e "${BLUE}"
         echo "╔══════════════════════════════════════╗"
-        echo "║          超级中转脚本 V1.0            ║"
+        echo "║          超级中转脚本 V1.1.0          ║"
         echo "║        WireGuard多落地机管理工具       ║"
         echo "╠══════════════════════════════════════╣"
         echo "║  1. 配置落地机 (WireGuard服务端)      ║"

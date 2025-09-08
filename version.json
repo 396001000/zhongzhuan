@@ -1,15 +1,31 @@
 {
-  "version": "1.0.0",
+  "version": "1.1.0",
   "update_time": "2025-01-09",
   "download_url": "https://raw.githubusercontent.com/396001000/zhongzhuan/main/chaojizhongzhuan.sh",
   "changelog": [
-    "✅ 支持WireGuard多落地机管理",
+    "🌍 支持11种Linux发行版",
+    "🔧 智能包管理器适配",
+    "🛡️ 多防火墙系统支持",
+    "✅ WireGuard多落地机管理",
     "✅ 自动生成3x-ui出站配置",
     "✅ 系统网络优化",
     "✅ 可视化管理界面"
   ],
   "requirements": {
-    "os": ["Ubuntu", "Debian", "CentOS"],
-    "arch": ["x86_64", "aarch64"]
+    "os": [
+      "Ubuntu 18.04+",
+      "Debian 10+", 
+      "CentOS 7/8",
+      "RHEL 8/9",
+      "Fedora 35+",
+      "Arch Linux",
+      "Manjaro 21+",
+      "openSUSE Leap 15+",
+      "Alpine Linux 3.15+",
+      "Gentoo (experimental)",
+      "Void Linux (experimental)"
+    ],
+    "arch": ["x86_64", "aarch64", "armv7l"],
+    "kernel": "WireGuard support (5.6+ or module)"
   }
 }
