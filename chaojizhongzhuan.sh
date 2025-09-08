@@ -470,14 +470,14 @@ add_landing_server() {
     cat > "/etc/wireguard/${interface_name}.conf" << EOF
 [Interface]
 PrivateKey = $CLIENT_PRIVATE_KEY
-Address = 10.0.$subnet.2/24
+Address = 10.0.0.2/24
 # 保留本地SSH连接，避免断开管理连接
 Table = off
 
 [Peer]
 PublicKey = $SERVER_PUBLIC_KEY
 Endpoint = $SERVER_IP:$SERVER_PORT
-AllowedIPs = 10.0.$subnet.0/24
+AllowedIPs = 10.0.0.0/24
 PersistentKeepalive = 25
 EOF
     
@@ -536,7 +536,7 @@ EOF
     
     # 测试连接
     log_step "测试连接到落地机..."
-    if ping -c 3 -W 5 "10.0.$subnet.1" >/dev/null 2>&1; then
+    if ping -c 3 -W 5 "10.0.0.1" >/dev/null 2>&1; then
         log_info "✅ $server_name 连接成功"
     else
         log_warn "⚠️  $server_name 连接测试失败，请检查配置"
@@ -691,7 +691,7 @@ EOF
       "protocol": "wireguard",
       "settings": {
         "secretKey": "$private_key",
-        "address": ["10.0.$subnet.2/24"],
+        "address": ["10.0.0.2/24"],
         "peers": [
           {
             "publicKey": "$public_key",
