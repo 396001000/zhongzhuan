@@ -380,7 +380,19 @@ EOF
     
     # 启动服务
     systemctl enable wg-quick@wg0
-    systemctl start wg-quick@wg0
+    
+    # 检查服务是否已经运行
+    if systemctl is-active wg-quick@wg0 >/dev/null 2>&1; then
+        log_warn "检测到WireGuard服务已运行，是否重启以应用新配置？"
+        read -p "重启WireGuard服务？[Y/n]: " restart_choice
+        if [[ "$restart_choice" != "n" && "$restart_choice" != "N" ]]; then
+            systemctl restart wg-quick@wg0
+            log_info "WireGuard服务已重启"
+        fi
+    else
+        systemctl start wg-quick@wg0
+        log_info "WireGuard服务已启动"
+    fi
     
     # 保存配置
     cat > "$CONFIG_FILE" << EOF
