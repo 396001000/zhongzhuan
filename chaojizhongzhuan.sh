@@ -578,8 +578,8 @@ list_landing_servers() {
         local color="$RED"
         local detail=""
         
-        # 检查systemd服务状态
-        if systemctl is-active "wg-quick@$interface" >/dev/null 2>&1; then
+        # 直接检查WireGuard接口状态（更准确）
+        if wg show "$interface" >/dev/null 2>&1; then
             # 检查WireGuard握手状态
             local handshake_info=$(wg show "$interface" latest-handshakes 2>/dev/null | head -1)
             if [[ -n "$handshake_info" ]]; then
