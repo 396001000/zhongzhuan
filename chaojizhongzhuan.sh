@@ -845,7 +845,7 @@ update_script() {
     
     # 定义更新源
     local github_url="https://raw.githubusercontent.com/396001000/zhongzhuan/main/chaojizhongzhuan.sh"
-    local gitee_url="https://gitee.com/dlaasd/zhongzhuan/raw/master/chaojizhongzhuan.sh"
+    local gitee_url="https://gitee.com/dlaasd/zhongzhuan/raw/main/chaojizhongzhuan.sh"
     local version_url="https://raw.githubusercontent.com/396001000/zhongzhuan/main/version.json"
     local current_version="1.2.0"
     

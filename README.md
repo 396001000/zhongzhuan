@@ -33,7 +33,7 @@
 curl -fsSL https://raw.githubusercontent.com/396001000/zhongzhuan/main/install.sh | bash
 
 # 方法2：Gitee源（国内推荐）
-curl -fsSL https://gitee.com/dlaasd/zhongzhuan/raw/master/install.sh | bash
+curl -fsSL https://gitee.com/dlaasd/zhongzhuan/raw/main/install-gitee.sh | bash
 
 # 方法3：使用wget（GitHub）
 wget -qO- https://raw.githubusercontent.com/396001000/zhongzhuan/main/install.sh | bash
@@ -280,7 +280,7 @@ journalctl -u wg-quick@wg0 -f
 wget https://raw.githubusercontent.com/396001000/zhongzhuan/main/chaojizhongzhuan.sh
 
 # 或从Gitee下载（国内用户）
-wget https://gitee.com/dlaasd/zhongzhuan/raw/master/chaojizhongzhuan.sh
+wget https://gitee.com/dlaasd/zhongzhuan/raw/main/chaojizhongzhuan.sh
 
 # 2. 添加执行权限
 chmod +x chaojizhongzhuan.sh
@@ -315,7 +315,7 @@ chaojizhongzhuan
 curl -fsSL https://raw.githubusercontent.com/396001000/zhongzhuan/main/install.sh | bash
 
 # Gitee源（国内用户推荐）
-curl -fsSL https://gitee.com/dlaasd/zhongzhuan/raw/master/install.sh | bash
+curl -fsSL https://gitee.com/dlaasd/zhongzhuan/raw/main/install-gitee.sh | bash
 ```
 
 ## 🗑️ 卸载脚本
