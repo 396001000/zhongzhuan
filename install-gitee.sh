@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 超级中转脚本在线安装器（Gitee版）
-# 使用方法: curl -fsSL https://gitee.com/dlaasd/zhongzhuan/raw/master/install.sh | bash
+# 使用方法: curl -fsSL https://gitee.com/dlaasd/zhongzhuan/raw/main/install-gitee.sh | bash
 
 set -e
 
@@ -16,6 +16,14 @@ NC='\033[0m'
 SCRIPT_URL="https://gitee.com/dlaasd/zhongzhuan/raw/main/chaojizhongzhuan.sh"
 SCRIPT_NAME="chaojizhongzhuan.sh"
 INSTALL_DIR="/etc/chaojizhongzhuan"
+
+# 国内镜像源配置
+MIRROR_SOURCES=(
+    "https://gitee.com/dlaasd/zhongzhuan/raw/main/chaojizhongzhuan.sh"
+    "https://raw.githubusercontents.com/396001000/zhongzhuan/main/chaojizhongzhuan.sh"
+    "https://ghproxy.com/https://raw.githubusercontent.com/396001000/zhongzhuan/main/chaojizhongzhuan.sh"
+    "https://cdn.jsdelivr.net/gh/396001000/zhongzhuan@main/chaojizhongzhuan.sh"
+)
 
 log_info() {
     echo -e "${GREEN}[INFO]${NC} $1"
@@ -72,14 +80,39 @@ download_script() {
     # 创建目录
     mkdir -p "$INSTALL_DIR"
     
-    # 下载主脚本
-    if curl -fsSL "$SCRIPT_URL" -o "$INSTALL_DIR/$SCRIPT_NAME"; then
-        chmod +x "$INSTALL_DIR/$SCRIPT_NAME"
-        log_info "脚本下载成功"
-    else
-        log_error "脚本下载失败，请检查网络连接或尝试GitHub源"
-        echo "GitHub源安装命令："
-        echo "curl -fsSL https://raw.githubusercontent.com/396001000/zhongzhuan/main/install.sh | bash"
+    # 尝试多个镜像源
+    local success=false
+    local source_names=("Gitee" "GitHub镜像" "GitHub代理" "jsDelivr CDN")
+    
+    for i in "${!MIRROR_SOURCES[@]}"; do
+        local url="${MIRROR_SOURCES[$i]}"
+        local name="${source_names[$i]}"
+        
+        log_step "尝试 $name 源..."
+        
+        if curl -fsSL --connect-timeout 10 --max-time 30 "$url" -o "$INSTALL_DIR/$SCRIPT_NAME" 2>/dev/null; then
+            # 验证下载的文件
+            if [[ -s "$INSTALL_DIR/$SCRIPT_NAME" ]] && head -1 "$INSTALL_DIR/$SCRIPT_NAME" | grep -q "#!/bin/bash"; then
+                chmod +x "$INSTALL_DIR/$SCRIPT_NAME"
+                log_info "$name 源下载成功"
+                success=true
+                break
+            else
+                log_warn "$name 源文件无效，尝试下一个源..."
+                rm -f "$INSTALL_DIR/$SCRIPT_NAME"
+            fi
+        else
+            log_warn "$name 源连接失败，尝试下一个源..."
+        fi
+    done
+    
+    if [[ "$success" != "true" ]]; then
+        log_error "所有镜像源都无法访问，请检查网络连接"
+        log_error "可尝试的解决方案："
+        log_error "1. 检查防火墙设置"
+        log_error "2. 使用VPN或代理"
+        log_error "3. 稍后重试"
+        log_error "4. 手动下载安装"
         exit 1
     fi
 }
