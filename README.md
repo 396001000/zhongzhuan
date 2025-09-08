@@ -1,7 +1,7 @@
 # 🚀 超级中转脚本 - WireGuard多落地机管理工具
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.0.0-green.svg)](https://github.com/用户名/zhongzhuan/releases)
+[![Version](https://img.shields.io/badge/version-1.0.0-green.svg)](https://github.com/396001000/zhongzhuan/releases)
 [![Platform](https://img.shields.io/badge/platform-Linux-lightgrey.svg)](README.md)
 
 一个强大的WireGuard多落地机管理工具，支持一键配置落地机和中转机，自动生成3x-ui出站配置，让您轻松搭建高性能的代理网络。
@@ -23,10 +23,10 @@
 
 ```bash
 # 方法1：使用curl（推荐）
-curl -fsSL https://raw.githubusercontent.com/用户名/zhongzhuan/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/396001000/zhongzhuan/main/install.sh | bash
 
 # 方法2：使用wget
-wget -qO- https://raw.githubusercontent.com/用户名/zhongzhuan/main/install.sh | bash
+wget -qO- https://raw.githubusercontent.com/396001000/zhongzhuan/main/install.sh | bash
 ```
 
 ### 启动脚本
@@ -228,7 +228,7 @@ journalctl -u wg-quick@wg0 -f
 
 ```bash
 # 1. 下载脚本
-wget https://raw.githubusercontent.com/用户名/zhongzhuan/main/chaojizhongzhuan.sh
+wget https://raw.githubusercontent.com/396001000/zhongzhuan/main/chaojizhongzhuan.sh
 
 # 2. 添加执行权限
 chmod +x chaojizhongzhuan.sh
@@ -248,7 +248,7 @@ chaojizhongzhuan
 # 选择：5. 更新脚本
 
 # 方法2：重新安装
-curl -fsSL https://raw.githubusercontent.com/用户名/zhongzhuan/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/396001000/zhongzhuan/main/install.sh | bash
 ```
 
 ## 🗑️ 卸载脚本
@@ -291,13 +291,13 @@ systemctl disable wg-quick@*
 
 如果这个项目对您有帮助，请给我们一个Star！
 
-[![Star History Chart](https://api.star-history.com/svg?repos=用户名/zhongzhuan&type=Date)](https://star-history.com/#用户名/zhongzhuan&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=396001000/zhongzhuan&type=Date)](https://star-history.com/#396001000/zhongzhuan&Date)
 
 ## 📞 联系我们
 
 - 📧 邮箱：your-email@example.com
 - 💬 Telegram：@your_telegram
-- 🐛 问题反馈：[Issues](https://github.com/用户名/zhongzhuan/issues)
+- 🐛 问题反馈：[Issues](https://github.com/396001000/zhongzhuan/issues)
 
 ---
 

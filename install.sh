@@ -13,7 +13,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 # 配置参数
-SCRIPT_URL="https://raw.githubusercontent.com/用户名/仓库名/main/chaojizhongzhuan.sh"
+SCRIPT_URL="https://raw.githubusercontent.com/396001000/zhongzhuan/main/chaojizhongzhuan.sh"
 SCRIPT_NAME="chaojizhongzhuan.sh"
 INSTALL_DIR="/etc/chaojizhongzhuan"
 
@@ -33,7 +33,7 @@ log_step() {
 check_root() {
     if [[ $EUID -ne 0 ]]; then
         log_error "请使用root权限运行此安装脚本"
-        echo "请使用: sudo bash <(curl -fsSL https://raw.githubusercontent.com/用户名/仓库名/main/install.sh)"
+        echo "请使用: sudo bash <(curl -fsSL https://raw.githubusercontent.com/396001000/zhongzhuan/main/install.sh)"
         exit 1
     fi
 }
