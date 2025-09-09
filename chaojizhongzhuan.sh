@@ -851,12 +851,16 @@ generate_3xui_config() {
     echo "复制以下代码到3x-ui出站设置的JSON配置中："
     echo ""
     
-    jq -r '.servers[] | "\(.name)|\(.private_key)|\(.public_key)|\(.endpoint)"' "$SERVERS_FILE" | while IFS='|' read -r name private_key public_key endpoint; do
+    jq -r '.servers[] | "\(.name)|\(.client_private)|\(.server_public)|\(.endpoint)"' "$SERVERS_FILE" | while IFS='|' read -r name private_key public_key endpoint; do
         local tag="wg-$(echo "$name" | tr ' ' '-' | tr '[:upper:]' '[:lower:]')"
         
         echo "----------------------------------------"
         echo "落地机: $name"
         echo "----------------------------------------"
+        # 解析端点信息
+        local server_ip=$(echo "$endpoint" | cut -d: -f1)
+        local server_port=$(echo "$endpoint" | cut -d: -f2)
+        
         cat << EOF
 {
   "tag": "$tag",
@@ -867,10 +871,13 @@ generate_3xui_config() {
     "peers": [
       {
         "publicKey": "$public_key",
-        "allowedIPs": ["0.0.0.0/0"],
-        "endpoint": "$endpoint"
+        "allowedIPs": ["0.0.0.0/0", "::/0"],
+        "endpoint": "$server_ip:$server_port",
+        "keepAlive": 25
       }
-    ]
+    ],
+    "mtu": 1420,
+    "reserved": [0, 0, 0]
   }
 }
 EOF
@@ -889,13 +896,17 @@ EOF
 EOF
     
     local first=true
-    jq -r '.servers[] | "\(.name)|\(.private_key)|\(.public_key)|\(.endpoint)"' "$SERVERS_FILE" | while IFS='|' read -r name private_key public_key endpoint; do
+    jq -r '.servers[] | "\(.name)|\(.client_private)|\(.server_public)|\(.endpoint)"' "$SERVERS_FILE" | while IFS='|' read -r name private_key public_key endpoint; do
         if [[ "$first" == "false" ]]; then
             echo "    }," >> "$config_file"
         fi
         first=false
         
         local tag="wg-$(echo "$name" | tr ' ' '-' | tr '[:upper:]' '[:lower:]')"
+        
+        # 解析端点信息
+        local server_ip=$(echo "$endpoint" | cut -d: -f1)
+        local server_port=$(echo "$endpoint" | cut -d: -f2)
         
         cat >> "$config_file" << EOF
     {
@@ -907,10 +918,13 @@ EOF
         "peers": [
           {
             "publicKey": "$public_key",
-            "allowedIPs": ["0.0.0.0/0"],
-            "endpoint": "$endpoint"
+            "allowedIPs": ["0.0.0.0/0", "::/0"],
+            "endpoint": "$server_ip:$server_port",
+            "keepAlive": 25
           }
-        ]
+        ],
+        "mtu": 1420,
+        "reserved": [0, 0, 0]
       }
 EOF
     done
@@ -936,19 +950,32 @@ EOF
     echo ""
     echo -e "${YELLOW}配置文件位置:${NC} $config_file"
     echo ""
-    echo -e "${YELLOW}使用方法:${NC}"
-    echo "1. 复制以下配置内容"
+    echo -e "${GREEN}使用方法:${NC}"
+    echo "1. 复制上面的单个出站配置（推荐方法1）"
     echo "2. 登录3x-ui管理面板"
-    echo "3. 出站设置 → 批量添加"
-    echo "4. 粘贴配置内容并保存"
-    echo "5. 重启3x-ui服务"
+    echo "3. 进入 '设置' → '出站规则'"
+    echo "4. 点击 '添加出站'"
+    echo "5. 粘贴JSON配置到配置框"
+    echo "6. 点击保存并重启3x-ui"
     echo ""
-    echo -e "${CYAN}配置内容:${NC}"
+    echo -e "${YELLOW}故障排除:${NC}"
+    echo "• 如果配置无效，请检查WireGuard连接状态"
+    echo "• 确保落地机WireGuard服务正常运行"
+    echo "• 检查端口是否被防火墙阻止"
+    echo "• 尝试重启3x-ui服务: systemctl restart x-ui"
+    echo ""
+    echo -e "${CYAN}完整配置文件内容:${NC}"
     echo "----------------------------------------"
     cat "$config_file"
     echo "----------------------------------------"
     echo ""
-    echo -e "${YELLOW}提示:${NC} 客户端请设置为'规则模式'或'绕过大陆'以实现智能分流"
+    echo -e "${YELLOW}高级设置:${NC}"
+    echo "• MTU: 1420 (适用于大多数网络环境)"
+    echo "• keepAlive: 25秒 (保持连接活跃)"
+    echo "• allowedIPs: 0.0.0.0/0, ::/0 (全流量代理)"
+    echo "• reserved: [0,0,0] (兼容性设置)"
+    echo ""
+    echo -e "${GREEN}提示:${NC} 推荐在3x-ui中配置路由规则，实现智能分流"
 }
 
 # 查看连接状态
