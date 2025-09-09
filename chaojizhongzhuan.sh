@@ -707,10 +707,44 @@ EOF
     
     # 测试连接
     log_step "测试连接到落地机..."
+    
+    # 检查并修复路由配置
+    log_step "检查路由配置..."
+    if ! ip route | grep -q "10.0.0.0/24 dev $interface_name"; then
+        log_warn "缺少内网路由，正在添加..."
+        ip route add 10.0.0.0/24 dev "$interface_name" 2>/dev/null || true
+        sleep 1
+    fi
+    
+    # 测试连通性
     if ping -c 3 -W 5 "10.0.0.1" >/dev/null 2>&1; then
         log_info "✅ $server_name 连接成功"
     else
-        log_warn "⚠️  $server_name 连接测试失败，请检查配置"
+        log_warn "⚠️  $server_name 连接测试失败"
+        log_step "诊断连接问题..."
+        
+        # 详细诊断
+        echo -e "  ${YELLOW}路由表检查:${NC}"
+        local route_info=$(ip route | grep -E "(10\.0\.0\.|$interface_name)" || echo "  未找到相关路由")
+        echo -e "    $route_info"
+        
+        echo -e "  ${YELLOW}接口状态:${NC}"
+        if ip addr show "$interface_name" >/dev/null 2>&1; then
+            local interface_info=$(ip addr show "$interface_name" | head -2 | tail -1)
+            echo -e "    $interface_info"
+        else
+            echo -e "    ${RED}接口不存在${NC}"
+        fi
+        
+        echo -e "  ${YELLOW}握手状态:${NC}"
+        local handshake=$(wg show "$interface_name" latest-handshakes 2>/dev/null || echo "无握手信息")
+        echo -e "    $handshake"
+        
+        echo -e "  ${YELLOW}建议解决方案:${NC}"
+        echo -e "    1. 检查落地机WireGuard是否正常运行"
+        echo -e "    2. 确认落地机防火墙允许10.0.0.0/24网段"
+        echo -e "    3. 使用调试模式获取详细信息 (菜单选项9)"
+        echo -e "    4. 考虑使用传统代理协议作为备选方案"
     fi
     
     echo ""
@@ -976,6 +1010,154 @@ EOF
     echo "• reserved: [0,0,0] (兼容性设置)"
     echo ""
     echo -e "${GREEN}提示:${NC} 推荐在3x-ui中配置路由规则，实现智能分流"
+}
+
+# 生成传统代理配置 (备选方案)
+generate_traditional_proxy_config() {
+    echo ""
+    log_step "生成传统代理配置 (备选方案)"
+    
+    if [[ ! -f "$SERVERS_FILE" ]]; then
+        log_error "未找到落地机配置，请先添加落地机"
+        return
+    fi
+    
+    local servers_count=$(jq '.servers | length' "$SERVERS_FILE")
+    if [[ $servers_count -eq 0 ]]; then
+        log_error "未找到落地机配置，请先添加落地机"
+        return
+    fi
+    
+    echo ""
+    echo "==============================================="
+    echo -e "${CYAN}传统代理配置 (如果WireGuard不工作)${NC}"
+    echo "==============================================="
+    echo ""
+    echo -e "${YELLOW}说明:${NC} 如果3x-ui的WireGuard出站无法正常工作，"
+    echo "可以考虑以下传统代理方案："
+    echo ""
+    
+    # 方案1：SOCKS5代理
+    echo -e "${CYAN}方案1: SOCKS5代理 (推荐)${NC}"
+    echo "在落地机安装SOCKS5代理，中转机通过SOCKS5连接："
+    echo ""
+    
+    jq -r '.servers[] | @base64' "$SERVERS_FILE" | while read -r server; do
+        local name=$(echo "$server" | base64 -d | jq -r '.name')
+        local endpoint=$(echo "$server" | base64 -d | jq -r '.endpoint')
+        local server_ip=$(echo "$endpoint" | cut -d: -f1)
+        
+        echo "落地机: $name ($server_ip)"
+        echo "----------------------------------------"
+        echo "1. 在落地机安装SOCKS5代理:"
+        echo "   curl -fsSL https://raw.githubusercontent.com/teddysun/across/master/dante.sh | bash"
+        echo ""
+        echo "2. 3x-ui出站配置:"
+        cat << EOF
+{
+  "tag": "socks-${name}",
+  "protocol": "socks",
+  "settings": {
+    "servers": [
+      {
+        "address": "${server_ip}",
+        "port": 1080,
+        "users": []
+      }
+    ]
+  }
+}
+EOF
+        echo ""
+    done
+    
+    echo ""
+    echo -e "${CYAN}方案2: HTTP代理${NC}"
+    echo "在落地机安装HTTP代理，适用于HTTP流量："
+    echo ""
+    
+    jq -r '.servers[] | @base64' "$SERVERS_FILE" | while read -r server; do
+        local name=$(echo "$server" | base64 -d | jq -r '.name')
+        local endpoint=$(echo "$server" | base64 -d | jq -r '.endpoint')
+        local server_ip=$(echo "$endpoint" | cut -d: -f1)
+        
+        echo "落地机: $name"
+        echo "----------------------------------------"
+        echo "1. 在落地机安装Squid代理:"
+        echo "   apt update && apt install squid -y"
+        echo "   systemctl enable squid && systemctl start squid"
+        echo ""
+        echo "2. 3x-ui出站配置:"
+        cat << EOF
+{
+  "tag": "http-${name}",
+  "protocol": "http",
+  "settings": {
+    "servers": [
+      {
+        "address": "${server_ip}",
+        "port": 3128
+      }
+    ]
+  }
+}
+EOF
+        echo ""
+    done
+    
+    echo ""
+    echo -e "${CYAN}方案3: VMess/VLESS隧道${NC}"
+    echo "在落地机部署3x-ui，中转机连接落地机的3x-ui："
+    echo ""
+    
+    jq -r '.servers[] | @base64' "$SERVERS_FILE" | while read -r server; do
+        local name=$(echo "$server" | base64 -d | jq -r '.name')
+        local endpoint=$(echo "$server" | base64 -d | jq -r '.endpoint')
+        local server_ip=$(echo "$endpoint" | cut -d: -f1)
+        
+        echo "落地机: $name"
+        echo "----------------------------------------"
+        echo "1. 在落地机安装3x-ui:"
+        echo "   bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh)"
+        echo ""
+        echo "2. 配置VMess入站，然后在中转机3x-ui中添加出站:"
+        cat << EOF
+{
+  "tag": "vmess-${name}",
+  "protocol": "vmess",
+  "settings": {
+    "vnext": [
+      {
+        "address": "${server_ip}",
+        "port": 443,
+        "users": [
+          {
+            "id": "your-uuid-here",
+            "security": "auto"
+          }
+        ]
+      }
+    ]
+  },
+  "streamSettings": {
+    "network": "ws",
+    "security": "tls"
+  }
+}
+EOF
+        echo ""
+    done
+    
+    echo ""
+    echo -e "${GREEN}推荐顺序:${NC}"
+    echo "1. 优先尝试修复WireGuard路由问题"
+    echo "2. 如果WireGuard无法在3x-ui中工作，使用SOCKS5方案"
+    echo "3. 特殊需求可考虑HTTP或VMess方案"
+    echo ""
+    echo -e "${YELLOW}注意:${NC}"
+    echo "• 传统代理方案需要在落地机安装额外软件"
+    echo "• 性能和安全性可能不如WireGuard"
+    echo "• 建议优先解决WireGuard路由问题"
 }
 
 # 查看连接状态
@@ -1609,6 +1791,7 @@ show_relay_menu() {
         echo "║  2. 查看落地机列表                   ║"
         echo "║  3. 删除落地机                       ║"
         echo "║  4. 生成3x-ui出站配置                ║"
+        echo "║  X. 生成传统代理配置 (备选方案)      ║"
         echo "║  5. 查看连接状态                     ║"
         echo "║  6. 一键优化系统                     ║"
         echo "║  7. 重启WireGuard                    ║"
@@ -1625,7 +1808,7 @@ show_relay_menu() {
             echo ""
         fi
         
-        read -p "请选择操作 [0-9,A]: " choice
+        read -p "请选择操作 [0-9,A,X]: " choice
         
         case $choice in
             1)
@@ -1648,6 +1831,10 @@ show_relay_menu() {
                 ;;
             4)
                 generate_3xui_config
+                read -p "按回车键继续..."
+                ;;
+            X|x)
+                generate_traditional_proxy_config
                 read -p "按回车键继续..."
                 ;;
             5)
