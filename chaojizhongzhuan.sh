@@ -978,11 +978,41 @@ show_connection_status() {
             if [[ -f "$SERVERS_FILE" ]]; then
                 jq -r '.servers[].interface' "$SERVERS_FILE" | while read -r interface; do
                     echo "接口: $interface"
-                    if systemctl is-active "wg-quick@$interface" >/dev/null 2>&1; then
-                        echo -e "状态: ${GREEN}运行中${NC}"
+                    
+                    # 优先检查WireGuard接口是否实际运行
+                    if wg show "$interface" >/dev/null 2>&1; then
+                        # 检查是否有活跃连接
+                        local handshake_info=$(wg show "$interface" latest-handshakes 2>/dev/null | head -1)
+                        if [[ -n "$handshake_info" ]]; then
+                            local handshake_time=$(echo "$handshake_info" | awk '{print $2}')
+                            local current_time=$(date +%s)
+                            local time_diff=$((current_time - handshake_time))
+                            
+                            if [[ $time_diff -lt 300 ]]; then  # 5分钟内有握手
+                                echo -e "状态: ${GREEN}运行中${NC} (${time_diff}秒前活跃)"
+                                
+                                # 检查systemd服务状态
+                                if systemctl is-active "wg-quick@$interface" >/dev/null 2>&1; then
+                                    echo -e "服务: ${GREEN}正常${NC}"
+                                else
+                                    echo -e "服务: ${YELLOW}异常但接口运行中${NC}"
+                                fi
+                            else
+                                echo -e "状态: ${YELLOW}连接中${NC} (${time_diff}秒前握手)"
+                            fi
+                        else
+                            echo -e "状态: ${YELLOW}启动中${NC} (等待握手)"
+                        fi
+                        
+                        # 显示接口详细信息
                         wg show "$interface" 2>/dev/null | head -5
                     else
                         echo -e "状态: ${RED}已停止${NC}"
+                        
+                        # 检查systemd服务状态
+                        if systemctl is-active "wg-quick@$interface" >/dev/null 2>&1; then
+                            echo -e "服务: ${YELLOW}服务运行但接口异常${NC}"
+                        fi
                     fi
                     echo ""
                 done
@@ -990,6 +1020,32 @@ show_connection_status() {
         fi
     else
         echo "未检测到配置文件"
+    fi
+}
+
+# 修复WireGuard服务状态
+fix_wireguard_service() {
+    local interface="$1"
+    
+    log_step "修复WireGuard服务状态: $interface"
+    
+    # 检查接口是否运行但服务状态异常
+    if wg show "$interface" >/dev/null 2>&1; then
+        if ! systemctl is-active "wg-quick@$interface" >/dev/null 2>&1; then
+            log_step "接口运行中但服务状态异常，尝试修复..."
+            
+            # 尝试启用并启动服务
+            systemctl enable "wg-quick@$interface" 2>/dev/null || true
+            systemctl start "wg-quick@$interface" 2>/dev/null || true
+            
+            # 检查修复结果
+            sleep 2
+            if systemctl is-active "wg-quick@$interface" >/dev/null 2>&1; then
+                log_info "服务状态已修复"
+            else
+                log_warn "服务状态修复失败，但接口仍然正常运行"
+            fi
+        fi
     fi
 }
 
@@ -1006,8 +1062,30 @@ restart_services() {
         else
             if [[ -f "$SERVERS_FILE" ]]; then
                 jq -r '.servers[].interface' "$SERVERS_FILE" | while read -r interface; do
-                    systemctl restart "wg-quick@$interface"
-                    log_info "接口 $interface 已重启"
+                    # 检查接口状态
+                    if wg show "$interface" >/dev/null 2>&1; then
+                        log_step "重启接口: $interface"
+                        systemctl restart "wg-quick@$interface"
+                        
+                        # 验证重启结果
+                        sleep 2
+                        if wg show "$interface" >/dev/null 2>&1; then
+                            log_info "接口 $interface 重启成功"
+                        else
+                            log_error "接口 $interface 重启失败"
+                        fi
+                    else
+                        log_step "启动接口: $interface"
+                        systemctl start "wg-quick@$interface"
+                        
+                        # 验证启动结果
+                        sleep 2
+                        if wg show "$interface" >/dev/null 2>&1; then
+                            log_info "接口 $interface 启动成功"
+                        else
+                            log_error "接口 $interface 启动失败"
+                        fi
+                    fi
                 done
             fi
         fi
@@ -1283,8 +1361,9 @@ show_relay_menu() {
         echo "║  5. 查看连接状态                     ║"
         echo "║  6. 一键优化系统                     ║"
         echo "║  7. 重启WireGuard                    ║"
+        echo "║  8. 修复服务状态                     ║"
         echo "║  9. 初始化中转机环境                 ║"
-        echo "║  8. 返回主菜单                       ║"
+        echo "║  0. 返回主菜单                       ║"
         echo "╚══════════════════════════════════════╝"
         echo -e "${NC}"
         
@@ -1294,7 +1373,7 @@ show_relay_menu() {
             echo ""
         fi
         
-        read -p "请选择操作 [1-9]: " choice
+        read -p "请选择操作 [0-9]: " choice
         
         case $choice in
             1)
@@ -1332,7 +1411,18 @@ show_relay_menu() {
                 read -p "按回车键继续..."
                 ;;
             8)
-                return
+                # 修复服务状态
+                echo ""
+                log_step "修复WireGuard服务状态..."
+                if [[ -f "$SERVERS_FILE" ]]; then
+                    jq -r '.servers[].interface' "$SERVERS_FILE" | while read -r interface; do
+                        fix_wireguard_service "$interface"
+                    done
+                    log_info "服务状态修复完成"
+                else
+                    log_warn "未找到落地机配置"
+                fi
+                read -p "按回车键继续..."
                 ;;
             9)
                 log_step "初始化中转机环境..."
@@ -1340,6 +1430,9 @@ show_relay_menu() {
                 optimize_system
                 log_info "中转机环境初始化完成"
                 read -p "按回车键继续..."
+                ;;
+            0)
+                return
                 ;;
             *)
                 log_error "无效选择，请重新输入"
