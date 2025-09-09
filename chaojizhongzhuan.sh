@@ -93,6 +93,84 @@ find_available_port() {
     echo $((RANDOM % 10000 + 10000))
 }
 
+# 设置SOCKS5服务器
+setup_socks5_server() {
+    local port=${1:-1080}
+    
+    log_step "安装并配置SOCKS5服务..."
+    
+    # 检查是否已安装dante-server
+    if ! command -v danted &> /dev/null; then
+        log_step "安装dante-server..."
+        if command -v apt &> /dev/null; then
+            apt update >/dev/null 2>&1
+            apt install -y dante-server >/dev/null 2>&1
+        elif command -v yum &> /dev/null; then
+            yum install -y dante-server >/dev/null 2>&1
+        elif command -v dnf &> /dev/null; then
+            dnf install -y dante-server >/dev/null 2>&1
+        else
+            log_warn "无法自动安装dante-server，请手动安装"
+            return 1
+        fi
+    fi
+    
+    # 创建dante配置文件
+    cat > /etc/danted.conf << EOF
+# 基本配置
+logoutput: /var/log/danted.log
+internal: 0.0.0.0 port = $port
+external: $NETWORK_INTERFACE
+method: none
+user.privileged: root
+user.notprivileged: nobody
+
+# 客户端规则
+client pass {
+    from: 0.0.0.0/0 to: 0.0.0.0/0
+    log: error
+}
+
+# 服务器规则
+socks pass {
+    from: 0.0.0.0/0 to: 0.0.0.0/0
+    protocol: tcp udp
+    log: error
+}
+EOF
+    
+    # 创建systemd服务文件
+    cat > /etc/systemd/system/dante-socks.service << EOF
+[Unit]
+Description=Dante SOCKS5 Server
+After=network.target
+
+[Service]
+Type=forking
+PIDFile=/var/run/danted.pid
+ExecStart=/usr/sbin/danted -f /etc/danted.conf
+ExecReload=/bin/kill -HUP \$MAINPID
+KillMode=mixed
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    # 启用并启动服务
+    systemctl daemon-reload
+    systemctl enable dante-socks
+    systemctl restart dante-socks
+    
+    # 检查服务状态
+    if systemctl is-active dante-socks >/dev/null 2>&1; then
+        log_info "SOCKS5服务启动成功，监听端口: $port"
+    else
+        log_warn "SOCKS5服务启动失败"
+        return 1
+    fi
+}
+
 # 安装依赖
 install_dependencies() {
     log_step "安装系统依赖..."
@@ -332,7 +410,116 @@ get_server_ip() {
 
 # 配置落地机
 setup_landing_server() {
-    log_step "配置WireGuard落地机..."
+    echo ""
+    echo -e "${YELLOW}选择落地机模式:${NC}"
+    echo "1. 标准模式 (仅WireGuard)"
+    echo "2. 双模式 (WireGuard + SOCKS5) 推荐"
+    echo ""
+    read -p "请选择模式 [2]: " mode_choice
+    mode_choice=${mode_choice:-2}
+    
+    if [[ "$mode_choice" == "2" ]]; then
+        setup_dual_landing_server
+    else
+        setup_standard_landing_server
+    fi
+}
+
+# 配置双模式落地机
+setup_dual_landing_server() {
+    log_step "配置双模式落地机 (WireGuard + SOCKS5)..."
+    
+    # 自动分配端口
+    local wg_port=$(find_available_port 51820)
+    local socks_port=$(find_available_port $((wg_port + 1000)))
+    
+    log_info "分配端口: WireGuard=$wg_port, SOCKS5=$socks_port"
+    
+    # 生成WireGuard密钥
+    cd /etc/wireguard/keys
+    wg genkey | tee server.key | wg pubkey > server.pub
+    wg genkey | tee client.key | wg pubkey > client.pub
+    chmod 600 *.key
+    
+    local server_private=$(cat server.key)
+    local server_public=$(cat server.pub)
+    local client_private=$(cat client.key)
+    local client_public=$(cat client.pub)
+    
+    # 配置WireGuard
+    log_step "配置WireGuard服务..."
+    cat > /etc/wireguard/wg0.conf << EOF
+[Interface]
+PrivateKey = $server_private
+Address = 10.0.0.1/24
+ListenPort = $wg_port
+PostUp = iptables -t nat -A POSTROUTING -s 10.0.0.0/24 -o $NETWORK_INTERFACE -j MASQUERADE; iptables -A FORWARD -i wg0 -j ACCEPT; iptables -A FORWARD -o wg0 -j ACCEPT; iptables -A INPUT -p udp --dport $wg_port -j ACCEPT
+PostDown = iptables -t nat -D POSTROUTING -s 10.0.0.0/24 -o $NETWORK_INTERFACE -j MASQUERADE; iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT; iptables -D INPUT -p udp --dport $wg_port -j ACCEPT
+
+[Peer]
+PublicKey = $client_public
+AllowedIPs = 10.0.0.2/32
+PersistentKeepalive = 25
+EOF
+    
+    chmod 600 /etc/wireguard/wg0.conf
+    
+    # 配置SOCKS5服务
+    log_step "配置SOCKS5服务..."
+    setup_socks5_server "$socks_port"
+    
+    # 配置防火墙
+    configure_firewall "$wg_port"
+    configure_firewall "$socks_port"
+    
+    # 启动WireGuard
+    systemctl enable wg-quick@wg0
+    systemctl restart wg-quick@wg0
+    
+    # 保存配置
+    local config_data=$(cat << EOF
+{
+  "type": "dual_landing_server",
+  "server_ip": "$SERVER_IP",
+  "wireguard": {
+    "port": $wg_port,
+    "server_private": "$server_private",
+    "server_public": "$server_public",
+    "client_private": "$client_private",
+    "client_public": "$client_public"
+  },
+  "socks5": {
+    "port": $socks_port,
+    "username": "",
+    "password": ""
+  },
+  "network_interface": "$NETWORK_INTERFACE",
+  "created_time": "$(date '+%Y-%m-%d %H:%M:%S')"
+}
+EOF
+    )
+    
+    echo "$config_data" | jq '.' > "$CONFIG_FILE"
+    
+    echo ""
+    echo "==============================================="
+    echo -e "${GREEN}双模式落地机配置完成！${NC}"
+    echo "==============================================="
+    echo ""
+    echo -e "${YELLOW}双模式连接密钥:${NC}"
+    echo -e "${CYAN}dual://$server_public@$SERVER_IP:$wg_port:$socks_port/$client_private${NC}"
+    echo ""
+    echo -e "${YELLOW}服务状态:${NC}"
+    echo -e "${GREEN}WireGuard:${NC}"
+    systemctl status wg-quick@wg0 --no-pager -l | head -6
+    echo ""
+    echo -e "${GREEN}SOCKS5:${NC}"
+    systemctl status dante-socks --no-pager -l | head -6 || echo "SOCKS5服务检查中..."
+}
+
+# 配置标准落地机
+setup_standard_landing_server() {
+    log_step "配置标准WireGuard落地机..."
     
     # 检测端口
     local port=$(find_available_port 51820)
