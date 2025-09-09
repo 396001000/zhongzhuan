@@ -163,10 +163,278 @@ EOF
     systemctl restart dante-socks
     
     # 检查服务状态
+    sleep 2
     if systemctl is-active dante-socks >/dev/null 2>&1; then
         log_info "SOCKS5服务启动成功，监听端口: $port"
     else
-        log_warn "SOCKS5服务启动失败"
+        log_warn "SOCKS5服务启动失败，正在诊断..."
+        
+        # 显示详细错误信息
+        echo -e "${RED}错误详情:${NC}"
+        systemctl status dante-socks --no-pager -l | head -10
+        
+        echo -e "${YELLOW}日志信息:${NC}"
+        journalctl -xeu dante-socks.service --no-pager | tail -10
+        
+        # 尝试修复常见问题
+        log_step "尝试修复SOCKS5配置..."
+        fix_socks5_config "$port"
+        
+        # 重新尝试启动
+        systemctl restart dante-socks
+        sleep 2
+        
+        if systemctl is-active dante-socks >/dev/null 2>&1; then
+            log_info "SOCKS5服务修复成功"
+        else
+            log_warn "SOCKS5服务仍然无法启动，将使用备用配置"
+            setup_simple_socks5 "$port"
+        fi
+    fi
+}
+
+# 修复SOCKS5配置
+fix_socks5_config() {
+    local port=${1:-1080}
+    
+    log_step "修复dante配置文件..."
+    
+    # 创建改进的dante配置
+    cat > /etc/danted.conf << EOF
+# Dante SOCKS5 服务器配置
+logoutput: syslog
+errorlog: /var/log/dante-error.log
+
+# 网络接口配置
+internal: 0.0.0.0 port = $port
+external: $NETWORK_INTERFACE
+
+# 认证方法
+socksmethod: none
+clientmethod: none
+
+# 用户配置
+user.privileged: root
+user.unprivileged: nobody
+
+# 客户端访问规则
+client pass {
+    from: 0.0.0.0/0 to: 0.0.0.0/0
+    log: error
+}
+
+# SOCKS规则
+socks pass {
+    from: 0.0.0.0/0 to: 0.0.0.0/0
+    command: bind connect udpassociate
+    log: error
+    socksmethod: none
+}
+EOF
+    
+    # 创建日志目录
+    mkdir -p /var/log
+    touch /var/log/dante-error.log
+    chmod 644 /var/log/dante-error.log
+    
+    # 更新systemd服务配置
+    cat > /etc/systemd/system/dante-socks.service << EOF
+[Unit]
+Description=Dante SOCKS5 Server
+After=network.target
+Wants=network.target
+
+[Service]
+Type=forking
+User=root
+Group=root
+PIDFile=/var/run/danted.pid
+ExecStart=/usr/sbin/danted -f /etc/danted.conf -D
+ExecReload=/bin/kill -HUP \$MAINPID
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    systemctl daemon-reload
+}
+
+# 设置简单SOCKS5服务 (备用方案)
+setup_simple_socks5() {
+    local port=${1:-1080}
+    
+    log_step "配置备用SOCKS5服务..."
+    
+    # 尝试使用3proxy作为备用
+    if command -v apt &> /dev/null; then
+        apt install -y 3proxy >/dev/null 2>&1
+    fi
+    
+    if command -v 3proxy &> /dev/null; then
+        # 使用3proxy配置
+        cat > /etc/3proxy.conf << EOF
+# 3proxy配置
+daemon
+maxconn 1000
+nscache 65536
+timeouts 1 5 30 60 180 1800 15 60
+log /var/log/3proxy.log D
+logformat "- +_L%t.%. %N.%p %E %U %C:%c %R:%r %O %I %h %T"
+rotate 30
+
+users root
+
+auth none
+allow * * * 80-88,8080-8088 HTTP
+allow * * * 443,8443 HTTPS  
+socks -p$port
+EOF
+        
+        # 创建systemd服务
+        cat > /etc/systemd/system/simple-socks.service << EOF
+[Unit]
+Description=Simple SOCKS5 Proxy
+After=network.target
+
+[Service]
+Type=forking
+ExecStart=/usr/bin/3proxy /etc/3proxy.conf
+Restart=on-failure
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        
+        systemctl daemon-reload
+        systemctl enable simple-socks
+        systemctl start simple-socks
+        
+        if systemctl is-active simple-socks >/dev/null 2>&1; then
+            log_info "备用SOCKS5服务启动成功 (3proxy)"
+            return 0
+        fi
+    fi
+    
+    # 如果3proxy也不可用，创建Python SOCKS5服务
+    log_step "创建Python SOCKS5服务..."
+    
+    cat > /usr/local/bin/simple-socks5.py << 'EOF'
+#!/usr/bin/env python3
+import socket
+import threading
+import struct
+import sys
+
+class SOCKS5Server:
+    def __init__(self, host='0.0.0.0', port=1080):
+        self.host = host
+        self.port = port
+        
+    def handle_client(self, client_socket):
+        try:
+            # SOCKS5认证
+            client_socket.recv(262)
+            client_socket.send(b'\x05\x00')
+            
+            # 接收连接请求
+            data = client_socket.recv(4)
+            mode = data[1]
+            addrtype = data[3]
+            
+            if addrtype == 1:  # IPv4
+                addr = socket.inet_ntoa(client_socket.recv(4))
+            elif addrtype == 3:  # Domain name
+                addr_len = client_socket.recv(1)[0]
+                addr = client_socket.recv(addr_len).decode('utf-8')
+            
+            port = struct.unpack('>H', client_socket.recv(2))[0]
+            
+            # 建立连接
+            if mode == 1:  # CONNECT
+                remote = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                remote.connect((addr, port))
+                bind_addr = remote.getsockname()
+                addr = struct.unpack("!I", socket.inet_aton(bind_addr[0]))[0]
+                port = bind_addr[1]
+                
+                reply = struct.pack("!BBBBIH", 5, 0, 0, 1, addr, port)
+                client_socket.send(reply)
+                
+                # 数据转发
+                self.forward_data(client_socket, remote)
+                
+        except Exception as e:
+            pass
+        finally:
+            client_socket.close()
+    
+    def forward_data(self, client, remote):
+        def forward(source, destination):
+            try:
+                while True:
+                    data = source.recv(4096)
+                    if len(data) == 0:
+                        break
+                    destination.send(data)
+            except:
+                pass
+            finally:
+                source.close()
+                destination.close()
+        
+        t1 = threading.Thread(target=forward, args=(client, remote))
+        t2 = threading.Thread(target=forward, args=(remote, client))
+        t1.start()
+        t2.start()
+    
+    def start(self):
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind((self.host, self.port))
+        server.listen(5)
+        
+        print(f"SOCKS5 server listening on {self.host}:{self.port}")
+        
+        while True:
+            client_socket, addr = server.accept()
+            client_thread = threading.Thread(target=self.handle_client, args=(client_socket,))
+            client_thread.start()
+
+if __name__ == '__main__':
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 1080
+    server = SOCKS5Server('0.0.0.0', port)
+    server.start()
+EOF
+    
+    chmod +x /usr/local/bin/simple-socks5.py
+    
+    # 创建systemd服务
+    cat > /etc/systemd/system/python-socks.service << EOF
+[Unit]
+Description=Python SOCKS5 Server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/simple-socks5.py $port
+Restart=on-failure
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    systemctl daemon-reload
+    systemctl enable python-socks
+    systemctl start python-socks
+    
+    if systemctl is-active python-socks >/dev/null 2>&1; then
+        log_info "Python SOCKS5服务启动成功"
+    else
+        log_error "所有SOCKS5服务都无法启动"
         return 1
     fi
 }
