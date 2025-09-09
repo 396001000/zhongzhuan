@@ -700,18 +700,182 @@ get_server_ip() {
 # 配置落地机
 setup_landing_server() {
     echo ""
-    echo -e "${YELLOW}选择落地机模式:${NC}"
-    echo "1. 标准模式 (仅WireGuard)"
-    echo "2. 双模式 (WireGuard + SOCKS5) 推荐"
+    echo "==============================================="
+    echo -e "${CYAN}落地机模式选择${NC}"
+    echo "==============================================="
     echo ""
-    read -p "请选择模式 [2]: " mode_choice
-    mode_choice=${mode_choice:-2}
+    echo -e "${GREEN}1. WireGuard模式${NC} (高性能)"
+    echo "   • 纯WireGuard服务器，内核级性能"
+    echo "   • 延迟最低，速度最快"
+    echo "   • 适合性能优先的场景"
+    echo ""
+    echo -e "${BLUE}2. SOCKS5模式${NC} (高兼容)"
+    echo "   • 纯SOCKS5代理服务器"
+    echo "   • 3x-ui完美支持，兼容性最佳"
+    echo "   • 适合兼容性优先的场景"
+    echo ""
+    echo -e "${YELLOW}3. 双模式${NC} (全能型)"
+    echo "   • 同时提供WireGuard和SOCKS5"
+    echo "   • 智能切换，双重保障"
+    echo "   • 适合要求最高的场景"
+    echo ""
     
-    if [[ "$mode_choice" == "2" ]]; then
-        setup_dual_landing_server
+    read -p "请选择落地机模式 [1-3]: " mode_choice
+    
+    case $mode_choice in
+        1)
+            setup_wireguard_only_server
+            ;;
+        2)
+            setup_socks5_only_server
+            ;;
+        3)
+            setup_dual_landing_server
+            ;;
+        *)
+            log_error "无效选择，使用默认WireGuard模式"
+            setup_wireguard_only_server
+            ;;
+    esac
+}
+
+# 配置纯WireGuard落地机
+setup_wireguard_only_server() {
+    log_step "配置WireGuard落地机 (高性能模式)..."
+    
+    # 自动分配端口
+    local wg_port=$(find_available_port 51820)
+    log_info "分配WireGuard端口: $wg_port"
+    
+    # 生成WireGuard密钥
+    cd /etc/wireguard/keys
+    wg genkey | tee server.key | wg pubkey > server.pub
+    wg genkey | tee client.key | wg pubkey > client.pub
+    chmod 600 *.key
+    
+    local server_private=$(cat server.key)
+    local server_public=$(cat server.pub)
+    local client_private=$(cat client.key)
+    local client_public=$(cat client.pub)
+    
+    # 配置WireGuard
+    log_step "配置WireGuard服务..."
+    cat > /etc/wireguard/wg0.conf << EOF
+[Interface]
+PrivateKey = $server_private
+Address = 10.0.0.1/24
+ListenPort = $wg_port
+PostUp = iptables -t nat -A POSTROUTING -s 10.0.0.0/24 -o $NETWORK_INTERFACE -j MASQUERADE; iptables -A FORWARD -i wg0 -j ACCEPT; iptables -A FORWARD -o wg0 -j ACCEPT; iptables -A INPUT -p udp --dport $wg_port -j ACCEPT
+PostDown = iptables -t nat -D POSTROUTING -s 10.0.0.0/24 -o $NETWORK_INTERFACE -j MASQUERADE; iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT; iptables -D INPUT -p udp --dport $wg_port -j ACCEPT
+
+[Peer]
+PublicKey = $client_public
+AllowedIPs = 10.0.0.2/32
+PersistentKeepalive = 25
+EOF
+    
+    chmod 600 /etc/wireguard/wg0.conf
+    
+    # 配置防火墙
+    configure_firewall "$wg_port"
+    
+    # 启动WireGuard
+    systemctl enable wg-quick@wg0
+    systemctl restart wg-quick@wg0
+    
+    # 保存配置
+    local config_data=$(cat << EOF
+{
+  "type": "wireguard_landing_server",
+  "mode": "wireguard_only",
+  "server_ip": "$SERVER_IP",
+  "port": $wg_port,
+  "server_private": "$server_private",
+  "server_public": "$server_public",
+  "client_private": "$client_private",
+  "client_public": "$client_public",
+  "network_interface": "$NETWORK_INTERFACE",
+  "created_time": "$(date '+%Y-%m-%d %H:%M:%S')"
+}
+EOF
+    )
+    
+    echo "$config_data" | jq '.' > "$CONFIG_FILE"
+    
+    echo ""
+    echo "==============================================="
+    echo -e "${GREEN}WireGuard落地机配置完成！${NC}"
+    echo "==============================================="
+    echo ""
+    echo -e "${YELLOW}WireGuard连接密钥:${NC}"
+    echo -e "${CYAN}wg://$server_public@$SERVER_IP:$wg_port/$client_private${NC}"
+    echo ""
+    echo -e "${YELLOW}服务状态:${NC}"
+    systemctl status wg-quick@wg0 --no-pager -l | head -8
+    echo ""
+    echo -e "${GREEN}✓ 高性能WireGuard服务器配置完成${NC}"
+    echo -e "${YELLOW}优势:${NC} 内核级性能，延迟最低，速度最快"
+}
+
+# 配置纯SOCKS5落地机
+setup_socks5_only_server() {
+    log_step "配置SOCKS5落地机 (高兼容模式)..."
+    
+    # 自动分配端口
+    local socks_port=$(find_available_port 1080)
+    log_info "分配SOCKS5端口: $socks_port"
+    
+    # 配置SOCKS5服务
+    log_step "配置SOCKS5服务..."
+    setup_socks5_server "$socks_port"
+    
+    # 配置防火墙
+    configure_firewall "$socks_port"
+    
+    # 保存配置
+    local config_data=$(cat << EOF
+{
+  "type": "socks5_landing_server",
+  "mode": "socks5_only",
+  "server_ip": "$SERVER_IP",
+  "port": $socks_port,
+  "username": "",
+  "password": "",
+  "network_interface": "$NETWORK_INTERFACE",
+  "created_time": "$(date '+%Y-%m-%d %H:%M:%S')"
+}
+EOF
+    )
+    
+    echo "$config_data" | jq '.' > "$CONFIG_FILE"
+    
+    echo ""
+    echo "==============================================="
+    echo -e "${GREEN}SOCKS5落地机配置完成！${NC}"
+    echo "==============================================="
+    echo ""
+    echo -e "${YELLOW}SOCKS5连接信息:${NC}"
+    echo -e "${CYAN}socks5://$SERVER_IP:$socks_port${NC}"
+    echo ""
+    echo -e "${YELLOW}服务状态:${NC}"
+    
+    # 检查各种可能的SOCKS5服务
+    if systemctl is-active dante-socks >/dev/null 2>&1; then
+        echo -e "${GREEN}dante-socks: 运行中${NC}"
+        systemctl status dante-socks --no-pager -l | head -5
+    elif systemctl is-active simple-socks >/dev/null 2>&1; then
+        echo -e "${GREEN}simple-socks (3proxy): 运行中${NC}"
+        systemctl status simple-socks --no-pager -l | head -5
+    elif systemctl is-active python-socks >/dev/null 2>&1; then
+        echo -e "${GREEN}python-socks: 运行中${NC}"
+        systemctl status python-socks --no-pager -l | head -5
     else
-        setup_standard_landing_server
+        echo -e "${RED}SOCKS5服务未正常启动${NC}"
     fi
+    
+    echo ""
+    echo -e "${GREEN}✓ 高兼容SOCKS5服务器配置完成${NC}"
+    echo -e "${YELLOW}优势:${NC} 3x-ui完美支持，兼容性最佳"
 }
 
 # 配置双模式落地机
@@ -1538,12 +1702,40 @@ diagnose_and_fix_socks5() {
     
     # 读取配置
     local server_type=$(jq -r '.type' "$CONFIG_FILE" 2>/dev/null || echo "unknown")
-    if [[ "$server_type" != "dual_landing_server" ]]; then
-        log_error "当前不是双模式落地机，无需SOCKS5服务"
+    local server_mode=$(jq -r '.mode' "$CONFIG_FILE" 2>/dev/null || echo "unknown")
+    
+    echo -e "${CYAN}当前落地机类型:${NC} $server_type"
+    echo -e "${CYAN}当前模式:${NC} $server_mode"
+    echo ""
+    
+    if [[ "$server_type" == "socks5_landing_server" ]] || [[ "$server_type" == "dual_landing_server" ]]; then
+        # 有SOCKS5服务，继续诊断
+        log_info "检测到SOCKS5服务，开始诊断..."
+    else
+        log_error "当前落地机不包含SOCKS5服务"
+        echo "当前配置的服务类型："
+        case $server_type in
+            "wireguard_landing_server")
+                echo "• 纯WireGuard模式，无SOCKS5服务"
+                echo "• 如需SOCKS5，请重新配置为SOCKS5模式或双模式"
+                ;;
+            *)
+                echo "• 未知的服务类型"
+                echo "• 请重新配置落地机"
+                ;;
+        esac
         return 1
     fi
     
-    local socks_port=$(jq -r '.socks5.port' "$CONFIG_FILE" 2>/dev/null || echo "52820")
+    # 根据不同模式读取端口
+    local socks_port
+    if [[ "$server_type" == "socks5_landing_server" ]]; then
+        socks_port=$(jq -r '.port' "$CONFIG_FILE" 2>/dev/null || echo "1080")
+    elif [[ "$server_type" == "dual_landing_server" ]]; then
+        socks_port=$(jq -r '.socks5.port' "$CONFIG_FILE" 2>/dev/null || echo "52820")
+    else
+        socks_port="未知"
+    fi
     
     echo ""
     echo "==============================================="
@@ -2434,13 +2626,39 @@ show_landing_menu() {
                 ;;
             2)
                 if [[ -f "$CONFIG_FILE" ]]; then
-                    local server_public=$(jq -r '.server_public' "$CONFIG_FILE")
+                    local server_type=$(jq -r '.type' "$CONFIG_FILE" 2>/dev/null || echo "unknown")
                     local server_ip=$(jq -r '.server_ip' "$CONFIG_FILE")
-                    local port=$(jq -r '.port' "$CONFIG_FILE")
-                    local client_private=$(jq -r '.client_private' "$CONFIG_FILE")
+                    
                     echo ""
-                    echo -e "${YELLOW}连接密钥:${NC}"
-                    echo -e "${CYAN}wg://$server_public@$server_ip:$port/$client_private${NC}"
+                    echo -e "${YELLOW}连接信息:${NC}"
+                    
+                    case $server_type in
+                        "wireguard_landing_server")
+                            local server_public=$(jq -r '.server_public' "$CONFIG_FILE")
+                            local port=$(jq -r '.port' "$CONFIG_FILE")
+                            local client_private=$(jq -r '.client_private' "$CONFIG_FILE")
+                            echo -e "${GREEN}WireGuard模式:${NC}"
+                            echo -e "${CYAN}wg://$server_public@$server_ip:$port/$client_private${NC}"
+                            ;;
+                        "socks5_landing_server")
+                            local port=$(jq -r '.port' "$CONFIG_FILE")
+                            echo -e "${BLUE}SOCKS5模式:${NC}"
+                            echo -e "${CYAN}socks5://$server_ip:$port${NC}"
+                            ;;
+                        "dual_landing_server")
+                            local wg_server_public=$(jq -r '.wireguard.server_public' "$CONFIG_FILE")
+                            local wg_port=$(jq -r '.wireguard.port' "$CONFIG_FILE")
+                            local wg_client_private=$(jq -r '.wireguard.client_private' "$CONFIG_FILE")
+                            local socks_port=$(jq -r '.socks5.port' "$CONFIG_FILE")
+                            echo -e "${YELLOW}双模式:${NC}"
+                            echo -e "${GREEN}WireGuard:${NC} ${CYAN}wg://$wg_server_public@$server_ip:$wg_port/$wg_client_private${NC}"
+                            echo -e "${BLUE}SOCKS5:${NC} ${CYAN}socks5://$server_ip:$socks_port${NC}"
+                            echo -e "${GREEN}双模式密钥:${NC} ${CYAN}dual://$wg_server_public@$server_ip:$wg_port:$socks_port/$wg_client_private${NC}"
+                            ;;
+                        *)
+                            echo -e "${RED}未知的服务类型${NC}"
+                            ;;
+                    esac
                 else
                     log_error "未找到配置文件，请先配置落地机"
                 fi
