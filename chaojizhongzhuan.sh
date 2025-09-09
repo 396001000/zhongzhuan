@@ -1005,14 +1005,68 @@ show_connection_status() {
                         fi
                         
                         # 显示接口详细信息
-                        wg show "$interface" 2>/dev/null | head -5
+                        echo -e "${CYAN}接口详细信息:${NC}"
+                        wg show "$interface" 2>/dev/null | head -8
                     else
                         echo -e "状态: ${RED}已停止${NC}"
                         
+                        # 显示详细调试信息
+                        echo -e "${RED}调试信息:${NC}"
+                        
                         # 检查systemd服务状态
                         if systemctl is-active "wg-quick@$interface" >/dev/null 2>&1; then
-                            echo -e "服务: ${YELLOW}服务运行但接口异常${NC}"
+                            echo -e "  服务状态: ${YELLOW}运行中但接口异常${NC}"
+                            echo -e "  ${YELLOW}问题分析: systemd服务运行但WireGuard接口不存在${NC}"
+                        else
+                            echo -e "  服务状态: ${RED}已停止${NC}"
                         fi
+                        
+                        # 检查配置文件
+                        if [[ -f "/etc/wireguard/${interface}.conf" ]]; then
+                            echo -e "  配置文件: ${GREEN}存在${NC} (/etc/wireguard/${interface}.conf)"
+                        else
+                            echo -e "  配置文件: ${RED}不存在${NC} (/etc/wireguard/${interface}.conf)"
+                        fi
+                        
+                        # 检查端口占用
+                        local config_port=$(grep -E "^ListenPort" "/etc/wireguard/${interface}.conf" 2>/dev/null | awk '{print $3}' || echo "未知")
+                        if [[ "$config_port" != "未知" ]]; then
+                            echo -e "  配置端口: $config_port"
+                            if ss -ulpn | grep ":$config_port " >/dev/null 2>&1; then
+                                echo -e "  端口状态: ${YELLOW}被占用${NC}"
+                                local port_info=$(ss -ulpn | grep ":$config_port ")
+                                echo -e "  占用详情: $port_info"
+                            else
+                                echo -e "  端口状态: ${GREEN}可用${NC}"
+                            fi
+                        fi
+                        
+                        # 检查网络接口
+                        if ip link show "$interface" >/dev/null 2>&1; then
+                            echo -e "  网络接口: ${YELLOW}存在但无法通过wg管理${NC}"
+                            local interface_status=$(ip link show "$interface" | head -1)
+                            echo -e "  接口状态: $interface_status"
+                        else
+                            echo -e "  网络接口: ${RED}不存在${NC}"
+                        fi
+                        
+                        # 检查相关进程
+                        local wg_processes=$(ps aux | grep -E "(wg-quick|wireguard).*$interface" | grep -v grep || echo "")
+                        if [[ -n "$wg_processes" ]]; then
+                            echo -e "  相关进程: ${YELLOW}发现${NC}"
+                            echo "$wg_processes" | while read -r process; do
+                                echo -e "    $process"
+                            done
+                        else
+                            echo -e "  相关进程: ${RED}无${NC}"
+                        fi
+                        
+                        # 建议修复方案
+                        echo -e "${CYAN}建议修复方案:${NC}"
+                        echo -e "  1. 尝试重启WireGuard: 选择菜单 '7. 重启WireGuard'"
+                        echo -e "  2. 修复服务状态: 选择菜单 '8. 修复服务状态'"
+                        echo -e "  3. 删除并重新添加落地机"
+                        echo -e "  4. 检查网络环境和防火墙设置"
                     fi
                     echo ""
                 done
@@ -1021,6 +1075,176 @@ show_connection_status() {
     else
         echo "未检测到配置文件"
     fi
+}
+
+# 调试模式 - 详细诊断WireGuard状态
+debug_wireguard() {
+    echo ""
+    log_step "WireGuard详细诊断模式"
+    echo ""
+    
+    if [[ ! -f "$SERVERS_FILE" ]]; then
+        log_error "未找到落地机配置文件"
+        return
+    fi
+    
+    # 获取所有接口
+    local interfaces=($(jq -r '.servers[].interface' "$SERVERS_FILE"))
+    
+    if [[ ${#interfaces[@]} -eq 0 ]]; then
+        log_warn "未找到配置的落地机接口"
+        return
+    fi
+    
+    for interface in "${interfaces[@]}"; do
+        echo -e "${CYAN}========================================"
+        echo -e "诊断接口: $interface"
+        echo -e "========================================${NC}"
+        
+        # 1. WireGuard接口状态
+        echo -e "${YELLOW}1. WireGuard接口状态:${NC}"
+        if wg show "$interface" >/dev/null 2>&1; then
+            echo -e "  状态: ${GREEN}运行中${NC}"
+            wg show "$interface"
+        else
+            echo -e "  状态: ${RED}不存在或异常${NC}"
+            local wg_error=$(wg show "$interface" 2>&1 || true)
+            echo -e "  错误信息: $wg_error"
+        fi
+        echo ""
+        
+        # 2. systemd服务状态
+        echo -e "${YELLOW}2. systemd服务状态:${NC}"
+        systemctl status "wg-quick@$interface" --no-pager -l || true
+        echo ""
+        
+        # 3. 网络接口状态
+        echo -e "${YELLOW}3. 网络接口状态:${NC}"
+        if ip addr show "$interface" >/dev/null 2>&1; then
+            ip addr show "$interface"
+        else
+            echo -e "  ${RED}网络接口不存在${NC}"
+        fi
+        echo ""
+        
+        # 4. 配置文件检查
+        echo -e "${YELLOW}4. 配置文件检查:${NC}"
+        local config_file="/etc/wireguard/${interface}.conf"
+        if [[ -f "$config_file" ]]; then
+            echo -e "  文件路径: ${GREEN}$config_file${NC}"
+            echo -e "  文件权限: $(ls -la "$config_file")"
+            echo -e "  文件内容:"
+            cat "$config_file" | sed 's/PrivateKey.*/PrivateKey = [HIDDEN]/' | while read -r line; do
+                echo -e "    $line"
+            done
+        else
+            echo -e "  ${RED}配置文件不存在: $config_file${NC}"
+        fi
+        echo ""
+        
+        # 5. 端口检查
+        echo -e "${YELLOW}5. 端口占用检查:${NC}"
+        local listen_port=$(grep -E "^ListenPort" "$config_file" 2>/dev/null | awk '{print $3}' || echo "")
+        if [[ -n "$listen_port" ]]; then
+            echo -e "  配置端口: $listen_port"
+            local port_status=$(ss -ulpn | grep ":$listen_port " || echo "")
+            if [[ -n "$port_status" ]]; then
+                echo -e "  端口状态: ${YELLOW}被占用${NC}"
+                echo -e "  占用详情: $port_status"
+            else
+                echo -e "  端口状态: ${GREEN}可用${NC}"
+            fi
+        else
+            echo -e "  ${YELLOW}未找到配置端口${NC}"
+        fi
+        echo ""
+        
+        # 6. 进程检查
+        echo -e "${YELLOW}6. 相关进程检查:${NC}"
+        local wg_processes=$(ps aux | grep -E "(wg-quick|wireguard)" | grep -v grep || echo "")
+        if [[ -n "$wg_processes" ]]; then
+            echo "$wg_processes"
+        else
+            echo -e "  ${YELLOW}未找到相关进程${NC}"
+        fi
+        echo ""
+        
+        # 7. 路由表检查
+        echo -e "${YELLOW}7. 路由表检查:${NC}"
+        echo -e "  主路由表:"
+        ip route | grep -E "(default|10\.0\.)" | while read -r route; do
+            echo -e "    $route"
+        done
+        
+        if ip route show table main | grep -q "$interface"; then
+            echo -e "  ${interface}相关路由:"
+            ip route show table main | grep "$interface" | while read -r route; do
+                echo -e "    $route"
+            done
+        fi
+        echo ""
+        
+        # 8. 防火墙检查
+        echo -e "${YELLOW}8. 防火墙状态:${NC}"
+        if command -v ufw &> /dev/null; then
+            echo -e "  UFW状态: $(ufw status | head -1)"
+            if [[ -n "$listen_port" ]]; then
+                local ufw_rule=$(ufw status | grep "$listen_port" || echo "")
+                if [[ -n "$ufw_rule" ]]; then
+                    echo -e "  端口规则: $ufw_rule"
+                else
+                    echo -e "  端口规则: ${YELLOW}未找到 $listen_port 的规则${NC}"
+                fi
+            fi
+        elif command -v firewall-cmd &> /dev/null; then
+            echo -e "  firewalld状态: $(firewall-cmd --state 2>/dev/null || echo "未运行")"
+        else
+            echo -e "  ${YELLOW}未检测到防火墙管理工具${NC}"
+        fi
+        echo ""
+        
+        # 9. 连通性测试
+        echo -e "${YELLOW}9. 连通性测试:${NC}"
+        if wg show "$interface" >/dev/null 2>&1; then
+            # 获取落地机IP
+            local peer_endpoint=$(wg show "$interface" | grep -E "endpoint:" | awk '{print $2}' | cut -d: -f1)
+            local internal_gateway="10.0.0.1"
+            
+            echo -e "  测试内网网关 ($internal_gateway):"
+            if ping -c 2 -W 3 "$internal_gateway" >/dev/null 2>&1; then
+                echo -e "    ${GREEN}✓ 可达${NC}"
+            else
+                echo -e "    ${RED}✗ 不可达${NC}"
+            fi
+            
+            if [[ -n "$peer_endpoint" ]]; then
+                echo -e "  测试落地机外网IP ($peer_endpoint):"
+                if ping -c 2 -W 3 "$peer_endpoint" >/dev/null 2>&1; then
+                    echo -e "    ${GREEN}✓ 可达${NC}"
+                else
+                    echo -e "    ${RED}✗ 不可达${NC}"
+                fi
+            fi
+        else
+            echo -e "  ${RED}接口未运行，无法测试${NC}"
+        fi
+        
+        echo ""
+    done
+    
+    # 系统整体信息
+    echo -e "${CYAN}========================================"
+    echo -e "系统整体信息"
+    echo -e "========================================${NC}"
+    
+    echo -e "${YELLOW}内核版本:${NC} $(uname -r)"
+    echo -e "${YELLOW}WireGuard版本:${NC} $(wg --version 2>/dev/null || echo "未安装")"
+    echo -e "${YELLOW}系统负载:${NC} $(uptime | awk -F'load average:' '{print $2}')"
+    echo -e "${YELLOW}内存使用:${NC} $(free -h | grep Mem | awk '{print $3"/"$2}')"
+    echo -e "${YELLOW}磁盘使用:${NC} $(df -h / | tail -1 | awk '{print $3"/"$2" ("$5")"}')"
+    
+    echo ""
+    echo -e "${GREEN}诊断完成！${NC}"
 }
 
 # 修复WireGuard服务状态
@@ -1362,7 +1586,8 @@ show_relay_menu() {
         echo "║  6. 一键优化系统                     ║"
         echo "║  7. 重启WireGuard                    ║"
         echo "║  8. 修复服务状态                     ║"
-        echo "║  9. 初始化中转机环境                 ║"
+        echo "║  9. 调试模式 (详细诊断)              ║"
+        echo "║  A. 初始化中转机环境                 ║"
         echo "║  0. 返回主菜单                       ║"
         echo "╚══════════════════════════════════════╝"
         echo -e "${NC}"
@@ -1373,7 +1598,7 @@ show_relay_menu() {
             echo ""
         fi
         
-        read -p "请选择操作 [0-9]: " choice
+        read -p "请选择操作 [0-9,A]: " choice
         
         case $choice in
             1)
@@ -1425,6 +1650,10 @@ show_relay_menu() {
                 read -p "按回车键继续..."
                 ;;
             9)
+                debug_wireguard
+                read -p "按回车键继续..."
+                ;;
+            A|a)
                 log_step "初始化中转机环境..."
                 install_dependencies
                 optimize_system
