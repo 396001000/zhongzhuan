@@ -104,15 +104,36 @@ setup_socks5_server() {
         log_step "安装dante-server..."
         if command -v apt &> /dev/null; then
             apt update >/dev/null 2>&1
-            apt install -y dante-server >/dev/null 2>&1
+            # 尝试安装dante-server
+            if ! apt install -y dante-server >/dev/null 2>&1; then
+                log_warn "dante-server安装失败，尝试其他SOCKS5方案..."
+                setup_simple_socks5 "$port"
+                return $?
+            fi
         elif command -v yum &> /dev/null; then
-            yum install -y dante-server >/dev/null 2>&1
+            if ! yum install -y dante-server >/dev/null 2>&1; then
+                log_warn "dante-server安装失败，使用备用方案..."
+                setup_simple_socks5 "$port"
+                return $?
+            fi
         elif command -v dnf &> /dev/null; then
-            dnf install -y dante-server >/dev/null 2>&1
+            if ! dnf install -y dante-server >/dev/null 2>&1; then
+                log_warn "dante-server安装失败，使用备用方案..."
+                setup_simple_socks5 "$port"
+                return $?
+            fi
         else
-            log_warn "无法自动安装dante-server，请手动安装"
-            return 1
+            log_warn "无法自动安装dante-server，使用备用方案..."
+            setup_simple_socks5 "$port"
+            return $?
         fi
+    fi
+    
+    # 再次检查dante是否可用
+    if ! command -v danted &> /dev/null; then
+        log_warn "dante-server不可用，切换到备用方案..."
+        setup_simple_socks5 "$port"
+        return $?
     fi
     
     # 创建dante配置文件
@@ -782,7 +803,44 @@ EOF
     systemctl status wg-quick@wg0 --no-pager -l | head -6
     echo ""
     echo -e "${GREEN}SOCKS5:${NC}"
-    systemctl status dante-socks --no-pager -l | head -6 || echo "SOCKS5服务检查中..."
+    # 检查各种可能的SOCKS5服务
+    if systemctl is-active dante-socks >/dev/null 2>&1; then
+        echo "dante-socks: 运行中"
+        systemctl status dante-socks --no-pager -l | head -3
+    elif systemctl is-active simple-socks >/dev/null 2>&1; then
+        echo "simple-socks (3proxy): 运行中"  
+        systemctl status simple-socks --no-pager -l | head -3
+    elif systemctl is-active python-socks >/dev/null 2>&1; then
+        echo "python-socks: 运行中"
+        systemctl status python-socks --no-pager -l | head -3
+    else
+        echo -e "${RED}SOCKS5服务未运行${NC}"
+        echo "尝试手动启动SOCKS5服务..."
+        
+        # 尝试启动任何可用的SOCKS5服务
+        if [[ -f /etc/systemd/system/dante-socks.service ]]; then
+            systemctl start dante-socks >/dev/null 2>&1
+        fi
+        if [[ -f /etc/systemd/system/simple-socks.service ]]; then
+            systemctl start simple-socks >/dev/null 2>&1
+        fi
+        if [[ -f /etc/systemd/system/python-socks.service ]]; then
+            systemctl start python-socks >/dev/null 2>&1
+        fi
+        
+        # 再次检查
+        sleep 2
+        if systemctl is-active dante-socks >/dev/null 2>&1; then
+            echo "dante-socks: 已启动"
+        elif systemctl is-active simple-socks >/dev/null 2>&1; then
+            echo "simple-socks: 已启动"
+        elif systemctl is-active python-socks >/dev/null 2>&1; then
+            echo "python-socks: 已启动"
+        else
+            echo -e "${YELLOW}正在配置备用SOCKS5服务...${NC}"
+            setup_simple_socks5 "$socks_port"
+        fi
+    fi
 }
 
 # 配置标准落地机
@@ -1465,6 +1523,182 @@ EOF
     echo "• reserved: [0,0,0] (兼容性设置)"
     echo ""
     echo -e "${GREEN}提示:${NC} 推荐在3x-ui中配置路由规则，实现智能分流"
+}
+
+# 诊断并修复SOCKS5服务
+diagnose_and_fix_socks5() {
+    echo ""
+    log_step "诊断SOCKS5服务状态..."
+    
+    # 检查配置文件是否存在
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        log_error "未找到落地机配置文件"
+        return 1
+    fi
+    
+    # 读取配置
+    local server_type=$(jq -r '.type' "$CONFIG_FILE" 2>/dev/null || echo "unknown")
+    if [[ "$server_type" != "dual_landing_server" ]]; then
+        log_error "当前不是双模式落地机，无需SOCKS5服务"
+        return 1
+    fi
+    
+    local socks_port=$(jq -r '.socks5.port' "$CONFIG_FILE" 2>/dev/null || echo "52820")
+    
+    echo ""
+    echo "==============================================="
+    echo -e "${CYAN}SOCKS5服务诊断报告${NC}"
+    echo "==============================================="
+    
+    # 1. 检查端口配置
+    echo -e "${YELLOW}1. 端口配置:${NC} $socks_port"
+    
+    # 2. 检查端口占用
+    echo -e "${YELLOW}2. 端口占用检查:${NC}"
+    local port_status=$(ss -tulpn | grep ":$socks_port " || echo "")
+    if [[ -n "$port_status" ]]; then
+        echo -e "  ${GREEN}端口被占用:${NC} $port_status"
+        
+        # 检查是否是我们的服务
+        if echo "$port_status" | grep -q "danted\|3proxy\|python"; then
+            echo -e "  ${GREEN}✓ 端口被SOCKS5服务正确占用${NC}"
+        else
+            echo -e "  ${RED}✗ 端口被其他服务占用${NC}"
+        fi
+    else
+        echo -e "  ${RED}✗ 端口未被占用，服务可能未运行${NC}"
+    fi
+    
+    # 3. 检查服务状态
+    echo -e "${YELLOW}3. 服务状态检查:${NC}"
+    
+    # 检查dante-socks
+    if systemctl is-active dante-socks >/dev/null 2>&1; then
+        echo -e "  ${GREEN}✓ dante-socks: 运行中${NC}"
+    else
+        echo -e "  ${RED}✗ dante-socks: 未运行${NC}"
+        if [[ -f /etc/systemd/system/dante-socks.service ]]; then
+            echo -e "    服务已安装，检查错误..."
+            systemctl status dante-socks --no-pager -l | head -5 | while read line; do
+                echo -e "    $line"
+            done
+        fi
+    fi
+    
+    # 检查simple-socks (3proxy)
+    if systemctl is-active simple-socks >/dev/null 2>&1; then
+        echo -e "  ${GREEN}✓ simple-socks (3proxy): 运行中${NC}"
+    else
+        echo -e "  ${YELLOW}○ simple-socks: 未运行${NC}"
+    fi
+    
+    # 检查python-socks
+    if systemctl is-active python-socks >/dev/null 2>&1; then
+        echo -e "  ${GREEN}✓ python-socks: 运行中${NC}"
+    else
+        echo -e "  ${YELLOW}○ python-socks: 未运行${NC}"
+    fi
+    
+    # 4. 检查配置文件
+    echo -e "${YELLOW}4. 配置文件检查:${NC}"
+    
+    if [[ -f /etc/danted.conf ]]; then
+        echo -e "  ${GREEN}✓ dante配置存在${NC}: /etc/danted.conf"
+        local dante_port=$(grep "port = " /etc/danted.conf | head -1 | awk '{print $3}' || echo "未找到")
+        echo -e "    配置端口: $dante_port"
+    else
+        echo -e "  ${RED}✗ dante配置不存在${NC}"
+    fi
+    
+    if [[ -f /etc/3proxy.conf ]]; then
+        echo -e "  ${GREEN}✓ 3proxy配置存在${NC}: /etc/3proxy.conf"
+    else
+        echo -e "  ${YELLOW}○ 3proxy配置不存在${NC}"
+    fi
+    
+    if [[ -f /usr/local/bin/simple-socks5.py ]]; then
+        echo -e "  ${GREEN}✓ Python SOCKS5脚本存在${NC}"
+    else
+        echo -e "  ${YELLOW}○ Python SOCKS5脚本不存在${NC}"
+    fi
+    
+    # 5. 网络测试
+    echo -e "${YELLOW}5. 网络连通性测试:${NC}"
+    
+    # 测试端口监听
+    if nc -z localhost "$socks_port" 2>/dev/null; then
+        echo -e "  ${GREEN}✓ 端口 $socks_port 可连接${NC}"
+    else
+        echo -e "  ${RED}✗ 端口 $socks_port 无法连接${NC}"
+    fi
+    
+    echo ""
+    echo "==============================================="
+    echo -e "${CYAN}自动修复建议${NC}"
+    echo "==============================================="
+    
+    # 提供修复选项
+    echo "选择修复方案:"
+    echo "1. 重启dante-socks服务"
+    echo "2. 重新配置dante-socks"  
+    echo "3. 安装并启动3proxy备用服务"
+    echo "4. 安装并启动Python SOCKS5服务"
+    echo "5. 完全重新配置SOCKS5服务"
+    echo "0. 跳过修复"
+    echo ""
+    
+    read -p "请选择修复方案 [1-5,0]: " fix_choice
+    
+    case $fix_choice in
+        1)
+            log_step "重启dante-socks服务..."
+            systemctl restart dante-socks
+            sleep 2
+            if systemctl is-active dante-socks >/dev/null 2>&1; then
+                log_info "dante-socks重启成功"
+            else
+                log_warn "dante-socks重启失败"
+            fi
+            ;;
+        2)
+            log_step "重新配置dante-socks..."
+            fix_socks5_config "$socks_port"
+            systemctl restart dante-socks
+            sleep 2
+            if systemctl is-active dante-socks >/dev/null 2>&1; then
+                log_info "dante-socks重新配置成功"
+            else
+                log_warn "dante-socks重新配置失败"
+            fi
+            ;;
+        3)
+            log_step "安装3proxy备用服务..."
+            if command -v apt &> /dev/null; then
+                apt install -y 3proxy >/dev/null 2>&1
+            fi
+            setup_simple_socks5 "$socks_port"
+            ;;
+        4)
+            log_step "安装Python SOCKS5服务..."
+            setup_simple_socks5 "$socks_port"
+            ;;
+        5)
+            log_step "完全重新配置SOCKS5服务..."
+            # 停止所有SOCKS5服务
+            systemctl stop dante-socks simple-socks python-socks 2>/dev/null || true
+            # 重新配置
+            setup_socks5_server "$socks_port"
+            ;;
+        0)
+            log_info "跳过修复"
+            ;;
+        *)
+            log_error "无效选择"
+            ;;
+    esac
+    
+    echo ""
+    log_info "SOCKS5诊断完成"
 }
 
 # 生成传统代理配置 (备选方案)
@@ -2182,11 +2416,12 @@ show_landing_menu() {
         echo "║  3. 查看连接状态                     ║"
         echo "║  4. 一键优化系统                     ║"
         echo "║  5. 重启WireGuard                    ║"
+        echo "║  D. 诊断并修复SOCKS5                 ║"
         echo "║  6. 返回主菜单                       ║"
         echo "╚══════════════════════════════════════╝"
         echo -e "${NC}"
         
-        read -p "请选择操作 [1-6]: " choice
+        read -p "请选择操作 [1-6,D]: " choice
         
         case $choice in
             1)
@@ -2221,6 +2456,10 @@ show_landing_menu() {
                 ;;
             5)
                 restart_services
+                read -p "按回车键继续..."
+                ;;
+            D|d)
+                diagnose_and_fix_socks5
                 read -p "按回车键继续..."
                 ;;
             6)
